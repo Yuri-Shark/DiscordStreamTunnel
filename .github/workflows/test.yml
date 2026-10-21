@@ -16,5 +16,6 @@ jobs:
         run: python -c "import sys,unittest; sys.path[:0]=['source','source/vendor']; result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover('tests',pattern='test_*.py')); sys.exit(not result.wasSuccessful())"
       - run: node tests/test_runtime.cjs
       - run: node tests/test_updates.cjs
+      - run: node tests/test_sign_release.cjs
       - run: node tests/test_native.cjs
       - run: node tests/test_update_notice.cjs
