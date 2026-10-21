@@ -38,7 +38,15 @@ build_info={'version':VERSION,'python':sys.version.split()[0],'openssl':ssl.OPEN
 (windows/'build-info.json').write_text(json.dumps(build_info,indent=2)+'\n',encoding='utf-8')
 licenses=windows/'licencas';licenses.mkdir(exist_ok=True)
 shutil.copy2(Path(sys.base_prefix)/'LICENSE.txt',licenses/'Python.txt')
-shutil.copy2(Path(sys.base_prefix)/'tcl'/'tk8.6'/'license.terms',licenses/'Tk.txt')
+for component in ('Tk','Tcl'):
+    library=Path(sys.base_prefix)/'tcl'
+    terms=list(library.glob(component.lower()+'*/license.terms'))
+    if terms:shutil.copy2(terms[0],licenses/(component+'.txt'))
+    else:
+        containers=list(library.glob('lib'+component.lower()+'*.zip'))
+        if len(containers)!=1:raise RuntimeError('Missing bundled '+component+' license')
+        with zipfile.ZipFile(containers[0]) as archive:
+            (licenses/(component+'.txt')).write_bytes(archive.read(component.lower()+'_library/license.terms'))
 for file in (linux/'source'/'vendor').rglob('*'):
     if file.is_file() and file.name.upper().startswith(('LICENSE','COPYING')):shutil.copy2(file,licenses/(file.parent.parent.name+'-'+file.name))
 import importlib.metadata
