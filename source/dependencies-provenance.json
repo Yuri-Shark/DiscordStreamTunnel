@@ -1,0 +1,23 @@
+[
+  {
+    "name": "websockets",
+    "version": "16.1.1",
+    "filename": "websockets-16.1.1-py3-none-any.whl",
+    "source": "https://files.pythonhosted.org/packages/be/4d/2d0d67834092e354d2b0498f014a41249a89556bc406cf86f3e1557bb463/websockets-16.1.1-py3-none-any.whl",
+    "sha256": "6abbd3e82c731c8e531714466acd5d87b5e88ac3243465337ba71d68e23ae7e3"
+  },
+  {
+    "name": "python-socks",
+    "version": "2.8.2",
+    "filename": "python_socks-2.8.2-py3-none-any.whl",
+    "source": "https://files.pythonhosted.org/packages/3d/18/23b981b1cf58c1e7b7e36fa1392daf12878b6a3c26c5e4248601647a6d09/python_socks-2.8.2-py3-none-any.whl",
+    "sha256": "7cf785d0631e0659384a773b3c402bc22cccdc23894ba1d65f8524748ace1193"
+  },
+  {
+    "name": "async-timeout",
+    "version": "5.0.1",
+    "filename": "async_timeout-5.0.1-py3-none-any.whl",
+    "source": "https://files.pythonhosted.org/packages/fe/ba/e2081de779ca30d473f21f5b30e0e737c438205440784c7dfc81efc2b029/async_timeout-5.0.1-py3-none-any.whl",
+    "sha256": "39e3809566ff85354557ec2398b55e096c8364bacac9405a7a1fa429e77fe76c"
+  }
+]

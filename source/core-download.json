@@ -1,0 +1,25 @@
+{
+  "linux-amd64": {
+    "project": "SagerNet/sing-box",
+    "version": "v1.14.3",
+    "source": "https://github.com/SagerNet/sing-box/releases/download/v1.14.3/sing-box-1.14.3-linux-amd64.tar.gz",
+    "archiveSHA256": "e2bdf179c15a3652955dc44867e33ca0965c9c9b91b34267dcc5a5d639a5feee",
+    "executableSHA256": "768d31fa7f68debc067bb4626539498a1e8751d36a7b99e1a54bee6a23815f93"
+  },
+  "linux-arm64": {
+    "project": "SagerNet/sing-box",
+    "version": "v1.14.3",
+    "source": "https://github.com/SagerNet/sing-box/releases/download/v1.14.3/sing-box-1.14.3-linux-arm64.tar.gz",
+    "archiveSHA256": "29dae24d76bea3bc62d07dd3e60cfc12003de7debbd6b768df9be9c68360174e",
+    "executableSHA256": "299f9f6080d9c43504714ddddae6aa9b853d430ccfc816c456a73613b5455689"
+  },
+  "win32-amd64": {
+    "project": "SagerNet/sing-box",
+    "version": "v1.14.3",
+    "asset": "sing-box-1.14.3-windows-amd64.zip",
+    "source": "https://github.com/SagerNet/sing-box/releases/download/v1.14.3/sing-box-1.14.3-windows-amd64.zip",
+    "archiveSHA256": "d8b86ef58936dba9230ec6a57ffa4243933f3c14ef4809828b6c553440ed1518",
+    "publishedDigestMatched": true,
+    "executableSHA256": "5c19bb3f8c12d4e85b3d47fe63123a7624b314b58dd7a8e32f51004f1c4d2faf"
+  }
+}

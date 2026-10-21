@@ -1,0 +1,10 @@
+const fs=require('fs'),path=require('path'),crypto=require('crypto');
+const privateKeyPath=process.argv[2];if(!privateKeyPath)throw Error('Supply private signing key path outside repository');
+const root=path.resolve(__dirname,'..'),version=JSON.parse(fs.readFileSync(path.join(root,'source','version.json'))).version;
+const payload=fs.readFileSync(path.join(root,'release','runtime-bundle.json.gz'));
+const signed={schema:1,version,url:'https://github.com/SuporteAvyra/DiscordStreamTunnel/releases/download/v'+version+'/runtime-bundle.json.gz',bytes:payload.length,sha256:crypto.createHash('sha256').update(payload).digest('hex')};
+const bytes=Buffer.from(JSON.stringify(signed));const envelope={signed:bytes.toString('base64'),signature:crypto.sign(null,bytes,fs.readFileSync(privateKeyPath)).toString('base64')};
+const key=JSON.parse(fs.readFileSync(path.join(root,'source','trust.json'))).publicKey;
+const updater=require('../source/update.cjs');updater.unpack(payload,updater.verify(envelope,key));
+fs.writeFileSync(path.join(root,'release','update-manifest.json'),JSON.stringify(envelope,null,2));
+console.log('Release signed and verified with bundled public key.');

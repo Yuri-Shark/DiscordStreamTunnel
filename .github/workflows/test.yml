@@ -1,0 +1,19 @@
+name: Test
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  transport-and-updates:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.10', '3.14']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Transport tests using bundled libraries
+        run: python -c "import sys,unittest; sys.path[:0]=['source','source/vendor']; result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover('tests',pattern='test_*.py')); sys.exit(not result.wasSuccessful())"
+      - run: node tests/test_runtime.cjs
+      - run: node tests/test_updates.cjs
+      - run: node tests/test_native.cjs
