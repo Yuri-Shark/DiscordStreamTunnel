@@ -1,6 +1,9 @@
 'use strict';
 const fs=require('fs'),path=require('path'),https=require('https'),crypto=require('crypto'),zlib=require('zlib');
-const REPO='SuporteAvyra/DiscordStreamTunnel';
+const REPO='eduardofhabib/DiscordStreamTunnel';
+// One signed migration release uses the previous URL, which GitHub redirects
+// after ownership transfer. This lets 1.1.0 clients migrate automatically.
+const LEGACY_REPO='SuporteAvyra/DiscordStreamTunnel';
 const version=/^\d+\.\d+\.\d+$/;
 function newer(a,b){const x=a.split('.').map(Number),y=b.split('.').map(Number);for(let n=0;n<3;n++){if(x[n]!==y[n])return x[n]>y[n];}return false;}
 function verify(envelope,key){
@@ -8,7 +11,7 @@ function verify(envelope,key){
  if(!crypto.verify(null,bytes,key,Buffer.from(envelope.signature,'base64')))throw Error('InvalidSignature');
  const signed=JSON.parse(bytes);
  if(signed.schema!==1||!version.test(signed.version)||!Number.isInteger(signed.bytes)||signed.bytes<1||signed.bytes>4*1024*1024||!/^[a-f0-9]{64}$/.test(signed.sha256))throw Error('InvalidManifest');
- const u=new URL(signed.url);if(u.protocol!=='https:'||u.hostname!=='github.com'||!u.pathname.startsWith('/'+REPO+'/releases/download/')||u.username||u.password)throw Error('UnexpectedReleaseURL');
+ const u=new URL(signed.url);if(u.protocol!=='https:'||u.hostname!=='github.com'||![REPO,LEGACY_REPO].some(repo=>u.pathname.startsWith('/'+repo+'/releases/download/'))||u.username||u.password)throw Error('UnexpectedReleaseURL');
  return signed;
 }
 function unpack(buffer,signed){
@@ -48,6 +51,7 @@ async function check(root,session){
  write({state:'checking'});
  try{
   const trust=JSON.parse(fs.readFileSync(path.join(root,'trust.json'),'utf8'));
+  if(trust.repository===LEGACY_REPO){trust.repository=REPO;const temp=path.join(root,'trust.new.json');fs.writeFileSync(temp,JSON.stringify(trust),{mode:0o600});fs.renameSync(temp,path.join(root,'trust.json'));}
   const envelope=JSON.parse(await get('https://github.com/'+REPO+'/releases/latest/download/update-manifest.json',65536));
   const signed=verify(envelope,trust.publicKey),current=JSON.parse(fs.readFileSync(path.join(root,'active.json'),'utf8')).version;
   if(!newer(signed.version,current)){write({state:'current',version:current});return;}

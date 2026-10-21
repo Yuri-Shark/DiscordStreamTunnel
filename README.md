@@ -6,7 +6,7 @@ demais aplicativos continuam pela conexão normal.
 
 ## Instalar
 
-Baixe os pacotes em [Releases](https://github.com/SuporteAvyra/DiscordStreamTunnel/releases/latest).
+Baixe os pacotes em [Releases](https://github.com/eduardofhabib/DiscordStreamTunnel/releases/latest).
 É necessário Discord desktop nativo com Vencord e um `.conf` WireGuard
 da **própria conta Proton**. O portal permite gerar configurações no plano gratuito:
 [instruções oficiais](https://protonvpn.com/support/wireguard-configurations).
@@ -20,8 +20,8 @@ O programa inclui Python. Depois abra o Discord pelo atalho normal.
 Flatpak e Snap não são cobertos.
 
 ```sh
-tar -xzf DiscordStreamTunnel-1.1.0-linux.tar.gz
-cd DiscordStreamTunnel-1.1.0-linux
+tar -xzf DiscordStreamTunnel-1.1.1-linux.tar.gz
+cd DiscordStreamTunnel-1.1.1-linux
 sh instalar.sh
 ```
 
@@ -30,6 +30,11 @@ No Ubuntu: `sudo apt install python3 ca-certificates`. Execute a integração
 com seu usuário normal. Instale Vencord pelas [instruções oficiais](https://vencord.dev/download/).
 
 ## O que mudou na 1.1.0
+
+A versão 1.1.1 move o endereço canônico das atualizações para a conta pessoal
+`eduardofhabib`. A chave de assinatura foi preservada. Uma release de migração
+mantém o download compatível com clientes 1.1.0 usando o redirecionamento do
+GitHub; versões futuras consultam diretamente o repositório pessoal.
 
 - O carregador é restaurado depois que o atualizador do Vencord termina de
   escrever os arquivos. A abertura pelo atalho também repara o carregador.

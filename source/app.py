@@ -16,7 +16,7 @@ def gui(initial_action='install'):
     import threading
     import tkinter as tk
     from tkinter import filedialog,messagebox,ttk
-    from installation import install,uninstall,status,InstallError
+    from installation import install,uninstall,status,InstallError,VERSION
     root=tk.Tk();root.title('Transmissões no Discord');root.geometry('650x450');root.resizable(False,False)
     frame=ttk.Frame(root,padding=24);frame.pack(fill='both',expand=True)
     ttk.Label(frame,text='Transmissões no Discord',font=('Segoe UI',19,'bold')).pack(anchor='w')
@@ -47,7 +47,7 @@ def gui(initial_action='install'):
         threading.Thread(target=run,daemon=True).start()
     for title,kind in [('Instalar / reaplicar','install'),('Verificar instalação','status'),('Desinstalar','uninstall')]:
         button=ttk.Button(actions,text=title,command=lambda k=kind:task(k));button.pack(side='left',padx=(0,8));buttons.append(button)
-    ttk.Label(frame,text='Versão 1.1.0 · recuperação após atualização do Vencord\nAtualizações assinadas no GitHub · túnel preparado ao abrir Discord',wraplength=590,foreground='#555555').pack(anchor='w',pady=(20,0))
+    ttk.Label(frame,text='Versão '+VERSION+' · recuperação após atualização do Vencord\nAtualizações assinadas no GitHub · túnel preparado ao abrir Discord',wraplength=590,foreground='#555555').pack(anchor='w',pady=(20,0))
     def poll():
         nonlocal busy
         while not events.empty():

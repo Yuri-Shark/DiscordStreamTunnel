@@ -3,9 +3,11 @@ const updater=require('../source/update.cjs'),repair=require('../source/repair.c
 const keys=crypto.generateKeyPairSync('ed25519');
 const files=['source/app.py','source/native.cjs','source/stream_relay.py','source/runtime.template.js'].map(p=>({path:p,content:Buffer.from('synthetic-test').toString('base64'),sha256:crypto.createHash('sha256').update('synthetic-test').digest('hex')}));
 const buffer=zlib.gzipSync(JSON.stringify({version:'1.2.0',files}));
-const signed={schema:1,version:'1.2.0',url:'https://github.com/SuporteAvyra/DiscordStreamTunnel/releases/download/v1.2.0/runtime-bundle.json.gz',bytes:buffer.length,sha256:crypto.createHash('sha256').update(buffer).digest('hex')};
+const signed={schema:1,version:'1.2.0',url:'https://github.com/eduardofhabib/DiscordStreamTunnel/releases/download/v1.2.0/runtime-bundle.json.gz',bytes:buffer.length,sha256:crypto.createHash('sha256').update(buffer).digest('hex')};
 const bytes=Buffer.from(JSON.stringify(signed)),envelope={signed:bytes.toString('base64'),signature:crypto.sign(null,bytes,keys.privateKey).toString('base64')};
 assert.equal(updater.verify(envelope,keys.publicKey).version,'1.2.0');
+const legacyBytes=Buffer.from(JSON.stringify({...signed,url:signed.url.replace('eduardofhabib/','SuporteAvyra/')}));
+assert.equal(updater.verify({signed:legacyBytes.toString('base64'),signature:crypto.sign(null,legacyBytes,keys.privateKey).toString('base64')},keys.publicKey).version,'1.2.0');
 assert.throws(()=>updater.verify({...envelope,signed:Buffer.from(JSON.stringify({...signed,version:'9.0.0'})).toString('base64')},keys.publicKey),/Signature/);
 assert.throws(()=>updater.unpack(Buffer.concat([buffer,Buffer.from('tamper')]),signed),/Hash/);
 const bad=zlib.gzipSync(JSON.stringify({version:'1.2.0',files:[...files,{...files[0],path:'source/../../private-core.json'}]}));
