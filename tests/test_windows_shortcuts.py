@@ -25,7 +25,7 @@ class ShortcutTests(unittest.TestCase):
             original, untouched = stable.read_bytes(), ptb.read_bytes()
             self.assertEqual(manage(root, folders=[desktop]), 1)
             with ShellLink(stable) as link:
-                self.assertEqual(Path(link.target), root/'app/DiscordStreamTunnel.exe')
+                self.assertEqual(Path(link.target).resolve(), (root/'app/DiscordStreamTunnel.exe').resolve())
                 self.assertIn(' launch', link.arguments)
             self.assertEqual(ptb.read_bytes(), untouched)
             self.assertEqual(manage(root, folders=[desktop]), 0)
