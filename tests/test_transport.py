@@ -13,7 +13,7 @@ from websockets.exceptions import InvalidStatus
 
 from configuration import make_core_config
 from socks_udp import SocksUDP,PacketQueue,pack_packet,unpack_packet
-from stream_relay import MediaBridge,Relay,ready_target,request_details,valid_target
+from stream_relay import MediaBridge,Relay,StreamSession,ready_target,sfu_target,request_details,valid_target
 
 class DatagramEcho(asyncio.DatagramProtocol):
     def connection_made(self,transport): self.transport=transport
@@ -60,6 +60,71 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
         for host in ('127.0.0.1','10.0.0.1','169.254.169.254'):
             with self.assertRaises(ValueError): ready_target(json.dumps({'op':2,'d':{'ip':host,'port':50000}}))
         with self.assertRaises(ValueError): unpack_packet(b'\0\0\1\1'+b'\0'*6)
+
+    def test_v10_ready_without_endpoint_waits_for_sfu_update(self):
+        self.assertIsNone(ready_target(json.dumps({'op':2,'seq':1,'d':{'ssrc':123,'streams':[]}})))
+
+    def test_v10_sfu_updates_keep_media_destination_restrictions(self):
+        for address,port in [('127.0.0.1',50000),('10.0.0.1',50000),('169.254.169.254',50000),('8.8.8.8',22),('8.8.8.8',True)]:
+            with self.subTest(address=address,port=port),self.assertRaises(ValueError):
+                sfu_target(json.dumps({'op':33,'d':{'primary':{'ip':address,'port':port}}}))
+        with self.assertRaises(ValueError):ready_target(json.dumps({'op':2,'d':{'ip':'8.8.8.8'}}))
+
+    async def test_v10_sfu_endpoint_is_rewritten_and_binary_frames_are_unchanged(self):
+        ready={'op':2,'seq':1,'d':{'ssrc':123,'streams':[]}}
+        endpoint={'op':33,'seq':2,'d':{'primary':{'ip':'8.8.8.8','port':50000,'modes':['synthetic']}}}
+        cleared={'op':33,'seq':3,'d':{'primary':None}}
+        binary=b'\x00\x01\x1e\x00\xffsynthetic-mls'
+        media=[]
+        async def factory(settings,target,stats):
+            self.assertEqual(target,('8.8.8.8',50000))
+            value=FakeMedia();media.append(value);return value
+        relay=Relay({'nonce':'synthetic','socksPort':19885,'idleSeconds':40},core=FakeCore(),media_factory=factory)
+        upstream=FakeUpstream([json.dumps(ready),json.dumps(endpoint),binary,json.dumps(cleared)])
+        client=FakeUpstream([])
+        session=StreamSession('wss://test.discord.media/?v=10')
+        task=asyncio.create_task(relay.pump_down(upstream,client,session))
+        try:
+            for _ in range(100):
+                if len(client.received)==4 or task.done():break
+                await asyncio.sleep(.001)
+            if task.done():task.result()
+            self.assertEqual(json.loads(client.received[0]),ready)
+            result=json.loads(client.received[1])
+            self.assertEqual(result['seq'],2)
+            self.assertEqual(result['d']['primary'],{'ip':'127.0.0.1','port':54321,'modes':['synthetic']})
+            self.assertEqual(client.received[2],binary)
+            self.assertEqual(json.loads(client.received[3]),cleared)
+            self.assertEqual(len(media),1)
+            self.assertTrue(media[0].closed)
+            self.assertIsNone(session.media)
+        finally:
+            task.cancel();await asyncio.gather(task,return_exceptions=True)
+            await relay.close()
+
+    async def test_sfu_retarget_keeps_same_endpoint_bridge_and_replaces_changed_endpoint(self):
+        endpoints=[('8.8.8.8',50000),('8.8.8.8',50000),('1.1.1.1',50001)]
+        upstream=FakeUpstream([json.dumps({'op':33,'seq':i,'d':{'primary':{'ip':host,'port':port}}})
+                              for i,(host,port) in enumerate(endpoints)])
+        media=[];targets=[]
+        async def factory(settings,target,stats):
+            targets.append(target);bridge=FakeMedia();bridge.local_port=54321+len(media);media.append(bridge);return bridge
+        relay=Relay({'nonce':'synthetic','socksPort':19885},core=FakeCore(),media_factory=factory)
+        client=FakeUpstream([]);session=StreamSession('wss://test.discord.media/?v=10')
+        task=asyncio.create_task(relay.pump_down(upstream,client,session))
+        try:
+            for _ in range(100):
+                if len(client.received)==3 or task.done():break
+                await asyncio.sleep(.001)
+            if task.done():task.result()
+            self.assertEqual(targets,[endpoints[0],endpoints[2]])
+            self.assertEqual([json.loads(frame)['d']['primary']['port'] for frame in client.received],[54321,54321,54322])
+            self.assertTrue(media[0].closed);self.assertFalse(media[1].closed)
+            self.assertEqual(session.media_target,endpoints[2])
+        finally:
+            task.cancel();await asyncio.gather(task,return_exceptions=True)
+            if session.media:await session.media.close()
+            await relay.close()
 
     async def test_authenticated_udp_association_and_native_datagrams(self):
         loop=asyncio.get_running_loop()

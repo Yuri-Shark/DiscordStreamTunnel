@@ -44,17 +44,34 @@ def request_details(path,nonce):
     if not valid_target(q['target'][0]) or not SID.fullmatch(q['sid'][0]): raise ValueError('Invalid target or local session')
     return q['target'][0],q['sid'][0]
 
-def ready_target(message):
-    if not isinstance(message,str): return None
-    try: data=json.loads(message)
-    except (ValueError,TypeError): return None
-    if not isinstance(data,dict) or data.get('op')!=2: return None
-    body=data.get('d')
-    if not isinstance(body,dict): raise ValueError('Invalid media ready message')
+def media_target(body):
+    if not isinstance(body,dict): raise ValueError('Invalid media endpoint')
     address=ipaddress.ip_address(body.get('ip',''))
     port=body.get('port')
     if not address.is_global or type(port) is not int or not 1024<=port<=65535: raise ValueError('Invalid media destination')
-    return data,(str(address),port)
+    return str(address),port
+
+def media_message(message,opcode):
+    if not isinstance(message,str): return None
+    try: data=json.loads(message)
+    except (ValueError,TypeError): return None
+    if not isinstance(data,dict) or data.get('op')!=opcode: return None
+    if not isinstance(data.get('d'),dict): raise ValueError('Invalid media control message')
+    return data
+
+def ready_target(message):
+    data=media_message(message,2)
+    if data is None:return None
+    body=data['d']
+    # Voice gateway v10 may send READY before assigning an SFU endpoint.
+    if body.get('ip') is None and body.get('port') is None:return None
+    return data,media_target(body)
+
+def sfu_target(message):
+    data=media_message(message,33)
+    if data is None:return None
+    primary=data['d'].get('primary')
+    return data,None if primary is None else media_target(primary)
 
 class Core:
     def __init__(self,settings,base=BASE):
@@ -132,7 +149,7 @@ class MediaBridge:
 
 class StreamSession:
     def __init__(self,target):
-        self.target=target;self.media=None;self.active=False;self.closed_at=time.monotonic()
+        self.target=target;self.media=None;self.media_target=None;self.active=False;self.closed_at=time.monotonic()
 
 class Relay:
     def __init__(self,settings,core=None,connector=connect,media_factory=MediaBridge.create):
@@ -185,12 +202,18 @@ class Relay:
             self.stats['controlUpBytes']+=len(frame.encode() if isinstance(frame,str) else frame)
     async def pump_down(self,upstream,client,session):
         async for frame in upstream:
-            ready=ready_target(frame)
-            if ready:
-                message,target=ready
-                if session.media: await session.media.close()
-                session.media=await self.media_factory(self.settings,target,self.stats)
-                message['d']['ip']='127.0.0.1';message['d']['port']=session.media.local_port
+            endpoint=ready_target(frame) or sfu_target(frame)
+            if endpoint is not None:
+                message,target=endpoint
+                if session.media is not None and session.media_target!=target:
+                    previous=session.media;session.media=None;session.media_target=None
+                    await previous.close()
+                if target is not None:
+                    if session.media is None:
+                        session.media=await self.media_factory(self.settings,target,self.stats)
+                        session.media_target=target
+                    body=message['d']['primary'] if message['op']==33 else message['d']
+                    body['ip']='127.0.0.1';body['port']=session.media.local_port
                 frame=json.dumps(message,separators=(',',':'))
             await client.send(frame)
             self.stats['controlDownBytes']+=len(frame.encode() if isinstance(frame,str) else frame)

@@ -6,6 +6,7 @@
   const W = Vencord.Webpack, store = W.findStore('StreamRTCConnectionStore');
   if (!store) throw new Error('Stream connection store unavailable');
   const wrapped = new Map();
+  const watchedRoots = new Map();
   let enabled = true, automatic = false, constructions = 0, lastError = null;
   let videoGuard = 'waiting', guardAttempts = 0;
   function applyVideoGuard() {
@@ -66,10 +67,37 @@
     socket.createWebSocket = record.replacement;
     wrapped.set(socket, record);
   }
+  function watchRoot(root) {
+    if (root.context !== 'stream' || watchedRoots.has(root)) return;
+    const descriptor = Object.getOwnPropertyDescriptor(root, '_socket');
+    if (descriptor && (!descriptor.configurable || !descriptor.writable || !('value' in descriptor))) return;
+    const record = {descriptor, socket: root._socket};
+    record.get = () => record.socket;
+    record.set = socket => {
+      record.socket = socket;
+      // Native connect() assigns the socket and opens it in the same call.
+      // Attach before its first WebSocket, including for stream senders.
+      try { attach(root); } catch (error) { lastError = error?.name ?? 'RuntimeError'; }
+    };
+    Object.defineProperty(root, '_socket', {get: record.get, set: record.set,
+      enumerable: descriptor?.enumerable ?? true, configurable: true});
+    watchedRoots.set(root, record);
+  }
+  function unwatchRoot(root, record) {
+    const current = Object.getOwnPropertyDescriptor(root, '_socket');
+    if (current?.get === record.get && current?.set === record.set) {
+      Object.defineProperty(root, '_socket', record.descriptor
+        ? {...record.descriptor, value: record.socket}
+        : {value: record.socket, writable: true, enumerable: true, configurable: true});
+    }
+    watchedRoots.delete(root);
+  }
   function scan() {
     if (!enabled) return;
     try {
       const roots = Object.values(store.getRTCConnections());
+      for (const [root, record] of watchedRoots) if (!roots.includes(root)) unwatchRoot(root, record);
+      for (const root of roots) watchRoot(root);
       const activeSockets = new Set(roots.map(x => x._socket));
       for (const [socket, record] of wrapped) {
         if (!activeSockets.has(socket)) {
@@ -118,6 +146,7 @@
   function remove(options = {}) {
     enabled = false; automatic = false; store.removeChangeListener(scan);
     for (const [socket, record] of wrapped) if (socket.createWebSocket === record.replacement) socket.createWebSocket = record.original;
+    for (const [root, record] of watchedRoots) unwatchRoot(root, record);
     wrapped.clear(); delete window[key];
     if (options.reconnectReceivers) for (const root of Object.values(store.getRTCConnections())) {
       if (root.context === 'stream' && !root.isStreamSender()) root.reconnect();

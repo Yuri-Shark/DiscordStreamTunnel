@@ -4,6 +4,11 @@ Integração para encaminhar as sessões de compartilhamento de tela do Discord
 por um túnel Proton WireGuard em userspace. A voz principal da chamada e os
 demais aplicativos continuam pela conexão normal.
 
+O addon deve se limitar ao tunelamento em segundo plano. Os atalhos devem
+preservar o ícone original do Discord e qualquer ícone personalizado pelo
+usuário. Mudanças de aparência ou de outras funcionalidades do Discord
+exigem aviso prévio ao usuário.
+
 ## Instalar
 
 Baixe os pacotes em [Releases](https://github.com/Yuri-Shark/DiscordStreamTunnel/releases/latest).
@@ -38,6 +43,16 @@ com seu usuário normal. Instale Vencord pelas [instruções oficiais](https://v
 No Linux, a interface gráfica é opcional: instale `python3-tk` (Ubuntu) ou
 `tk` (CachyOS/Arch) e execute `python3 source/app.py --gui` dentro da pasta
 extraída. A instalação por terminal continua funcionando sem Tk.
+
+## O que mudou na 1.2.1
+
+- A primeira conexão de envio e de recepção aguarda o auxiliar de tunelamento,
+  inclusive quando o cliente cria e abre o socket na mesma chamada.
+- Compatibilidade com o gateway de mídia v10: `READY` sem endereço inicial,
+  atualização de servidor por `SFU_UPDATE` e retirada do endpoint. Os destinos
+  continuam restritos aos servidores de mídia e ao endereço local do auxiliar.
+- Os atalhos preservam o ícone original ou personalizado. Atalhos de instalações
+  antigas sem ícone explícito podem recuperar a referência do backup original.
 
 ## O que mudou na 1.2.0
 

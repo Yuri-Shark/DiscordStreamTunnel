@@ -56,6 +56,17 @@ class ShellLink:
         self.call(self.link, 10, [ctypes.c_wchar_p, ctypes.c_int], value, len(value))
         return value.value
 
+    @property
+    def icon(self):
+        value = ctypes.create_unicode_buffer(32768)
+        index = ctypes.c_int()
+        self.call(self.link, 16, [ctypes.c_wchar_p, ctypes.c_int, ctypes.POINTER(ctypes.c_int)],
+                  value, len(value), ctypes.byref(index))
+        return value.value, index.value
+
+    def set_icon(self, path, index=0):
+        self.call(self.link, 17, [ctypes.c_wchar_p, ctypes.c_int], str(path), index)
+
     def update(self, target, arguments, directory):
         for index, value in ((20, target), (11, arguments), (9, directory)):
             self.call(self.link, index, [ctypes.c_wchar_p], str(value))
@@ -123,6 +134,26 @@ def manage(root, remove=False, folders=None):
     for file in candidates:
         if not any(file.is_relative_to(folder) for folder in folders):continue
         with ShellLink(file) as shortcut:
+            owned = os.path.normcase(shortcut.target) == os.path.normcase(str(executable))
+            if owned:
+                # Older installs changed the target while leaving an implicit icon.
+                # Recover its original appearance without changing launch behavior.
+                if not shortcut.icon[0]:
+                    for item in changes:
+                        if os.path.normcase(item['path']) != os.path.normcase(str(file)):
+                            continue
+                        backup = Path(item['backup']).resolve()
+                        if (backup.is_relative_to(backups) and backup.suffix.lower() == '.lnk'
+                                and backup.is_file()):
+                            with ShellLink(backup) as original:
+                                icon, index = original.icon
+                                icon = icon or original.target
+                            if icon:
+                                shortcut.set_icon(icon, index)
+                                shortcut.save(file)
+                                modified += 1
+                        break
+                continue
             name = Path(shortcut.target).name.lower()
             if not (name == 'discord.exe' or name == 'update.exe' and
                     re.search(r'(?:^|\s)--processStart\s+"?Discord\.exe(?:"|\s|$)', shortcut.arguments, re.I)):
@@ -135,6 +166,11 @@ def manage(root, remove=False, folders=None):
             temp = record.with_suffix('.new.json')
             temp.write_text(json.dumps(changes, indent=2), encoding='utf-8')
             temp.replace(record)
+            # Freeze the effective original icon before redirecting the target.
+            # Explicit custom icons (including resource indexes) stay untouched.
+            icon, index = shortcut.icon
+            if not icon:
+                shortcut.set_icon(shortcut.target, index)
             shortcut.update(executable, '--root "'+str(root)+'" launch', root)
             shortcut.save(file)
             modified += 1
