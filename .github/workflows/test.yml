@@ -17,3 +17,4 @@ jobs:
       - run: node tests/test_runtime.cjs
       - run: node tests/test_updates.cjs
       - run: node tests/test_native.cjs
+      - run: node tests/test_update_notice.cjs

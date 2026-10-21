@@ -6,7 +6,7 @@ function start(root){
  const data=path.join(root,'data');if(!fs.existsSync(path.join(data,'private-core.json')))return;
  const settings=JSON.parse(fs.readFileSync(path.join(data,'local-settings.json'),'utf8'));
  const installation=JSON.parse(fs.readFileSync(path.join(root,'installation.json'),'utf8'));
- const version=JSON.parse(fs.readFileSync(path.join(root,'active.json'),'utf8')).version;
+ const version=JSON.parse(fs.readFileSync(path.join(__dirname,'version.json'),'utf8')).version;
  const repair=()=>require('./repair.cjs').ensure(root);
  repair();
  // VencordBuild completes only after all four upstream files have been written.
@@ -28,7 +28,9 @@ function start(root){
  contextBridge.exposeInMainWorld('DiscordProtonStreamsNative',{ensureHelper,rememberVideoGuard(value){if(value!==null&&(!Number.isInteger(value)||value<0||value>100))throw Error('InvalidVariant');const file=path.join(data,'video-guard-before.json');if(!fs.existsSync(file))fs.writeFileSync(file,JSON.stringify({variantId:value}),{mode:0o600});}});
  // Startup and helper readiness run in parallel. A failed warmup never blocks UI.
  ensureHelper().then(()=>probe('/warmup')).catch(()=>{});
- require('./update.cjs').check(root,String(process.ppid)).catch(()=>{});
+ const notice=require('./update-ui.cjs').start({root,runningVersion:version,repair});
+ notice.catch(()=>{});
+ require('./update.cjs').check(root,String(process.ppid)).then(()=>notice.then(()=>webFrame.executeJavaScript('window.__discordStreamTunnelUpdateNotice?.refresh()'))).catch(()=>{});
  const runtime=fs.readFileSync(path.join(__dirname,'runtime.template.js'),'utf8').replace('/*__CONFIG__*/null',JSON.stringify({relayPort:settings.relayPort,nonce:settings.nonce}));
  const boot=`(async()=>{for(let n=0;n<150;n++){try{if(window.Vencord?.Webpack?.findStore('StreamRTCConnectionStore')){${runtime};window.__discordProtonStreams?.automatico(true);return;}}catch{}await new Promise(r=>setTimeout(r,100));}})()`;
  webFrame.executeJavaScript(boot).catch(()=>{});

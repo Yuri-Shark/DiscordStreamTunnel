@@ -20,8 +20,8 @@ O programa inclui Python. Depois abra o Discord pelo atalho normal.
 Flatpak e Snap não são cobertos.
 
 ```sh
-tar -xzf DiscordStreamTunnel-1.1.1-linux.tar.gz
-cd DiscordStreamTunnel-1.1.1-linux
+tar -xzf DiscordStreamTunnel-1.1.2-linux.tar.gz
+cd DiscordStreamTunnel-1.1.2-linux
 sh instalar.sh
 ```
 
@@ -29,11 +29,24 @@ No CachyOS/Arch, se faltar Python: `sudo pacman -S --needed python ca-certificat
 No Ubuntu: `sudo apt install python3 ca-certificates`. Execute a integração
 com seu usuário normal. Instale Vencord pelas [instruções oficiais](https://vencord.dev/download/).
 
-## O que mudou na 1.1.0
+## O que mudou na 1.1.2
+
+Quando uma atualização estiver baixada e verificada, aparece um aviso fixo
+no **canto superior direito do Discord**, com **Reiniciar e aplicar** e
+**Depois**. O botão verifica novamente se a versão está pronta, preserva o
+carregador e usa o reinício nativo do Discord. Reiniciar encerra a chamada e
+a transmissão atuais. Não há reinício sem clicar. Se adiar, a versão nova
+será usada na próxima abertura completa do aplicativo.
+
+O aviso passa a existir depois que a 1.1.2 estiver carregada. Quem está na
+1.1.0 ou 1.1.1 recebe esta versão pelo fluxo anterior e precisa abrir o Discord
+novamente uma vez para carregar o recurso; atualizações posteriores mostram o aviso.
+
+## Mudanças anteriores
 
 A versão 1.1.1 move o endereço canônico das atualizações para a conta pessoal
-`eduardofhabib`. A chave de assinatura foi preservada. Uma release de migração
-mantém o download compatível com clientes 1.1.0 usando o redirecionamento do
+`eduardofhabib`. A chave de assinatura foi preservada. Manifestos de migração
+mantêm o download compatível com clientes 1.1.0 usando o redirecionamento do
 GitHub; versões futuras consultam diretamente o repositório pessoal.
 
 - O carregador é restaurado depois que o atualizador do Vencord termina de
@@ -54,9 +67,10 @@ O manifesto tem assinatura Ed25519. O pacote e cada arquivo também têm SHA256.
 Assinaturas inválidas, versões anteriores e caminhos fora da pasta de código
 são rejeitados. Falha de rede preserva a versão instalada.
 
-Uma atualização baixada em segundo plano fica ativa **na próxima abertura do
-Discord**, para preservar as chamadas e transmissões em andamento. Não há
-reinício forçado. O estado fica em `data/update-status.json`.
+Uma atualização baixada em segundo plano fica pronta para a próxima abertura
+do Discord. A partir da 1.1.2, o aviso no canto superior direito permite
+**Reiniciar e aplicar** imediatamente ou escolher **Depois**. Não há reinício
+forçado. O estado fica em `data/update-status.json`.
 
 Os atalhos compatíveis do Windows são preservados em backup e passam a usar
 o iniciador da integração. No Linux, é criado um `discord.desktop` por usuário.
@@ -87,6 +101,7 @@ público não contêm configurações de conta, tokens, cookies ou chaves privad
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=source:source/vendor python3 -m unittest discover -s tests -p 'test_*.py' -v
 node tests/test_runtime.cjs
 node tests/test_updates.cjs
+node tests/test_update_notice.cjs
 ```
 
 `scripts/build_windows.py` usa PyInstaller. `scripts/package_release.py`
