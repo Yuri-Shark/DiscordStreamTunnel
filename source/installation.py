@@ -184,8 +184,10 @@ def repair():
 def launchers(remove=False):
     if sys.platform=='win32':
         if not getattr(sys,'frozen',False):return
-        result=subprocess.run(['powershell.exe','-NoProfile','-ExecutionPolicy','Bypass','-File',str(RESOURCE/'shortcuts.ps1'),'-DtsRoot',str(ROOT),'-Mode','remove' if remove else 'install'],capture_output=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-        if result.returncode:atomic_write(BASE/'launcher-status.json',b'{"configured":false}')
+        try:
+            from windows_shortcuts import manage
+            manage(ROOT,remove)
+        except Exception:atomic_write(BASE/'launcher-status.json',b'{"configured":false}')
         return
     applications=Path(os.environ.get('XDG_DATA_HOME',str(Path.home()/'.local'/'share')))/'applications'
     target=applications/'discord.desktop';backup=BASE/'desktop-before.bin';record=BASE/'desktop-created.json'

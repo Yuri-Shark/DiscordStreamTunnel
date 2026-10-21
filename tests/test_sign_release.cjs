@@ -16,6 +16,10 @@ assert(crypto.verify(null,compatBytes,keys.publicKey,Buffer.from(manifests.compa
 const compatibility=JSON.parse(compatBytes);
 assert.equal(compatibility.url,'https://github.com/previous-owner/DiscordStreamTunnel/releases/download/v1.1.3/runtime-bundle.json.gz');
 assert.equal(compatibility.sha256,canonical.sha256);
+const installers={win32:{url:'https://github.com/Yuri-Shark/DiscordStreamTunnel/releases/download/v1.1.3/DiscordStreamTunnel-1.1.3-Windows-x64.zip',bytes:128,sha256:'a'.repeat(64)}};
+const withInstaller=createManifests({...options,installers});
+assert.deepEqual(updater.verify(withInstaller.canonical,keys.publicKey).installers,installers);
+assert.deepEqual(JSON.parse(Buffer.from(withInstaller.compatibility.signed,'base64')).installers,installers);
 assert.deepEqual(updater.unpack(payload,compatibility),updater.unpack(payload,canonical));
 assert.throws(()=>createManifests({...options,compatEnvelope:{...options.compatEnvelope,signed:Buffer.from(JSON.stringify({...previous,url:'https://github.com/attacker/DiscordStreamTunnel/releases/download/v1.1.2/runtime-bundle.json.gz'})).toString('base64')}}),/Signature/);
 for(const url of ['http://github.com/previous-owner/DiscordStreamTunnel/releases/download/v1.1.2/runtime-bundle.json.gz','https://github.com/previous-owner/OtherProject/releases/download/v1.1.2/runtime-bundle.json.gz','https://github.com/previous-owner/DiscordStreamTunnel/releases/download/v1.1.2/runtime-bundle.json.gz?redirect=evil']){

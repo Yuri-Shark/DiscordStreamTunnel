@@ -6,6 +6,8 @@ import json
 import shutil
 import stat
 import sys
+import ssl
+import subprocess
 import tarfile
 import zipfile
 ROOT=Path(__file__).resolve().parents[1]
@@ -13,7 +15,7 @@ VERSION=json.loads((ROOT/'source'/'version.json').read_text())['version']
 output=ROOT/'release';output.mkdir(exist_ok=True)
 linux=output/('DiscordStreamTunnel-'+VERSION+'-linux');linux.mkdir(exist_ok=True)
 shutil.copytree(ROOT/'source',linux/'source',dirs_exist_ok=True,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
-for name in ('instalar.sh','README.md','LICENSE.txt'):shutil.copy2(ROOT/name,linux/name)
+for name in ('instalar.sh','README.md','LICENSE.txt','SECURITY.md'):shutil.copy2(ROOT/name,linux/name)
 for file in linux.rglob('*'):
     if file.is_file():file.write_bytes(file.read_bytes().replace(b'\r\n',b'\n'))
 def meta(info):
@@ -27,7 +29,13 @@ bundle={'version':VERSION,'files':files}
 (output/'runtime-bundle.json.gz').write_bytes(gzip.compress(json.dumps(bundle,separators=(',',':')).encode(),mtime=0))
 windows=output/('DiscordStreamTunnel-'+VERSION+'-Windows-x64');windows.mkdir(exist_ok=True)
 shutil.copytree(ROOT/'dist'/'DiscordStreamTunnel',windows,dirs_exist_ok=True)
-for name in ('README.md','LICENSE.txt'):shutil.copy2(ROOT/name,windows/name)
+for name in ('README.md','LICENSE.txt','SECURITY.md'):shutil.copy2(ROOT/name,windows/name)
+build_info={'version':VERSION,'python':sys.version.split()[0],'openssl':ssl.OPENSSL_VERSION,
+            'sourceCommit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
+            'sourceTreeClean':not bool(subprocess.check_output(['git','status','--porcelain'],cwd=ROOT,text=True).strip()),
+            'executableSHA256':hashlib.sha256((windows/'DiscordStreamTunnel.exe').read_bytes()).hexdigest(),
+            'packaging':'PyInstaller onedir, no UPX'}
+(windows/'build-info.json').write_text(json.dumps(build_info,indent=2)+'\n',encoding='utf-8')
 licenses=windows/'licencas';licenses.mkdir(exist_ok=True)
 shutil.copy2(Path(sys.base_prefix)/'LICENSE.txt',licenses/'Python.txt')
 shutil.copy2(Path(sys.base_prefix)/'tcl'/'tk8.6'/'license.terms',licenses/'Tk.txt')

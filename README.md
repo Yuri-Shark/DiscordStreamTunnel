@@ -15,13 +15,19 @@ da **própria conta Proton**. O portal permite gerar configurações no plano gr
 `DiscordStreamTunnel.exe`, escolha seu `.conf` e clique em **Instalar / reaplicar**.
 O programa inclui Python. Depois abra o Discord pelo atalho normal.
 
+O instalador tem tema escuro, ícone próprio e botões **Instalar / reaplicar**,
+**Reparar**, **Verificar** e **Desinstalar**. Reparar restaura o carregador
+existente sem pedir novamente o `.conf`.
+
+![Interface do instalador](https://raw.githubusercontent.com/Yuri-Shark/DiscordStreamTunnel/main/assets/installer-preview.png)
+
 **Linux:** use Discord nativo (`pacman`, `.deb`, pacote da distribuição) e Vencord.
 É necessário Python 3.10 ou superior; as bibliotecas já estão incluídas.
 Flatpak e Snap não são cobertos.
 
 ```sh
-tar -xzf DiscordStreamTunnel-1.1.3-linux.tar.gz
-cd DiscordStreamTunnel-1.1.3-linux
+tar -xzf DiscordStreamTunnel-1.2.0-linux.tar.gz
+cd DiscordStreamTunnel-1.2.0-linux
 sh instalar.sh
 ```
 
@@ -29,7 +35,35 @@ No CachyOS/Arch, se faltar Python: `sudo pacman -S --needed python ca-certificat
 No Ubuntu: `sudo apt install python3 ca-certificates`. Execute a integração
 com seu usuário normal. Instale Vencord pelas [instruções oficiais](https://vencord.dev/download/).
 
-## O que mudou na 1.1.3
+No Linux, a interface gráfica é opcional: instale `python3-tk` (Ubuntu) ou
+`tk` (CachyOS/Arch) e execute `python3 source/app.py --gui` dentro da pasta
+extraída. A instalação por terminal continua funcionando sem Tk.
+
+## O que mudou na 1.2.0
+
+- Interface reorganizada seguindo o estilo do instalador do Vencord, com
+  implementação e identidade visual próprias, ícone original e progresso na janela.
+- Verificação de novas versões do **instalador Windows** ao abrir, com janela
+  **Atualizar e reabrir** / **Agora não**. O pacote é autenticado com a mesma
+  chave Ed25519 do projeto antes de baixar, extrair e executar.
+- Atualização aceita persistente: se o pacote antigo for aberto outra vez,
+  ele revalida o cache e abre a versão nova. As configurações existentes são
+  preservadas. Falhas de rede ou assinatura mantêm o instalador atual.
+- Gerenciamento dos atalhos pela API nativa do Windows, sem PowerShell,
+  preservando os backups de instalações antigas.
+- Ícone multirresolução e informações de produto/versão no executável.
+  O pacote novo inclui Python 3.14.8. A integração mantém compatibilidade
+  com os executáveis instalados anteriormente.
+- `SHA256SUMS.txt` acompanha as releases. O executável ainda não tem assinatura
+  Authenticode: o aviso do SmartScreen pode continuar. Consulte
+  [Segurança e Code signing policy](SECURITY.md).
+
+O atualizador do instalador passa a existir no pacote Windows 1.2.0.
+Quem abre um ZIP 1.1.x extraído anteriormente precisa baixar o instalador novo
+uma vez para obter esse recurso; a integração dentro do Discord continua
+recebendo atualizações automaticamente sem reinstalação.
+
+## Migração do repositório
 
 O repositório e o endereço canônico das atualizações passam a ser
 `Yuri-Shark/DiscordStreamTunnel`. Instalações com atualização automática

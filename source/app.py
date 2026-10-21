@@ -12,66 +12,14 @@ def emit(result,report=None):
     if sys.stdout is not None:print(json.dumps(result,ensure_ascii=True))
 
 def gui(initial_action='install'):
-    import queue
-    import threading
-    import tkinter as tk
-    from tkinter import filedialog,messagebox,ttk
-    from installation import install,uninstall,status,InstallError,VERSION
-    root=tk.Tk();root.title('Transmissões no Discord');root.geometry('650x450');root.resizable(False,False)
-    frame=ttk.Frame(root,padding=24);frame.pack(fill='both',expand=True)
-    ttk.Label(frame,text='Transmissões no Discord',font=('Segoe UI',19,'bold')).pack(anchor='w')
-    ttk.Label(frame,text='Integração local com Vencord e Proton WireGuard',font=('Segoe UI',10)).pack(anchor='w',pady=(3,18))
-    ttk.Label(frame,text='Use uma configuração .conf da sua própria conta Proton.\nO aplicativo completo Proton não precisa ficar aberto.',justify='left').pack(anchor='w')
-    file_var=tk.StringVar();row=ttk.Frame(frame);row.pack(fill='x',pady=(15,10))
-    ttk.Entry(row,textvariable=file_var,width=60).pack(side='left',fill='x',expand=True)
-    ttk.Button(row,text='Escolher .conf',command=lambda:file_var.set(filedialog.askopenfilename(title='Escolher configuração WireGuard',filetypes=[('WireGuard','*.conf')]) or file_var.get())).pack(side='right',padx=(8,0))
-    label=tk.StringVar(value='Escolha o arquivo e clique em Instalar. O guia acompanha o ZIP.')
-    ttk.Label(frame,textvariable=label,wraplength=590,justify='left').pack(anchor='w',pady=(3,12))
-    bar=ttk.Progressbar(frame,mode='indeterminate');bar.pack(fill='x',pady=(0,12))
-    actions=ttk.Frame(frame);actions.pack(fill='x')
-    events=queue.Queue();buttons=[];busy=False
-    def task(kind):
-        nonlocal busy
-        if busy:return
-        if kind=='install' and not file_var.get():messagebox.showinfo('Arquivo necessário','Escolha o arquivo .conf gerado na sua conta Proton.',parent=root);return
-        if kind=='uninstall' and not messagebox.askyesno('Desinstalar','Remover a integração deste usuário e apagar sua configuração local?\n\nFeche o Discord antes de continuar.',parent=root):return
-        busy=True;bar.start(12)
-        for button in buttons:button.configure(state='disabled')
-        selected=file_var.get()
-        def run():
-            try:
-                result=install(selected,progress=lambda text:events.put(('progress',text))) if kind=='install' else uninstall() if kind=='uninstall' else status()
-                events.put(('done',(kind,result)))
-            except InstallError as error:events.put(('error',str(error)))
-            except Exception:events.put(('error','Não foi possível concluir. Feche o Discord, confira a conexão e tente novamente. Nenhuma chave foi exibida.'))
-        threading.Thread(target=run,daemon=True).start()
-    for title,kind in [('Instalar / reaplicar','install'),('Verificar instalação','status'),('Desinstalar','uninstall')]:
-        button=ttk.Button(actions,text=title,command=lambda k=kind:task(k));button.pack(side='left',padx=(0,8));buttons.append(button)
-    ttk.Label(frame,text='Versão '+VERSION+' · recuperação após atualização do Vencord\nAtualizações assinadas no GitHub · túnel preparado ao abrir Discord',wraplength=590,foreground='#555555').pack(anchor='w',pady=(20,0))
-    def poll():
-        nonlocal busy
-        while not events.empty():
-            event,value=events.get()
-            if event=='progress':label.set(value);continue
-            busy=False;bar.stop()
-            for button in buttons:button.configure(state='normal')
-            if event=='error':label.set(value);messagebox.showerror('Instalação não concluída',value,parent=root)
-            else:
-                kind,result=value
-                if kind=='install':text='Instalado. Feche o Discord por completo e abra novamente. Depois, abra uma transmissão para testar.'
-                elif kind=='uninstall':text='Integração e configuração privada removidas. Feche e abra o Discord para descarregar a sessão atual.'
-                else:text='Vencord: '+('encontrado' if result['vencordFound'] else 'não encontrado')+' | Integração: '+('instalada' if result['integrationInstalled'] else 'ausente')+' | Configuração: '+('presente' if result['configurationPresent'] else 'ausente')
-                label.set(text);messagebox.showinfo('Transmissões no Discord',text,parent=root)
-        root.after(120,poll)
-    root.protocol('WM_DELETE_WINDOW',lambda:None if busy else root.destroy())
-    root.after(100,poll)
-    if initial_action=='uninstall':root.after(200,lambda:task('uninstall'))
-    root.mainloop()
+    from installer_gui import run
+    run(initial_action)
+
 
 def main():
     if os.name!='nt':os.umask(0o077)
     parser=argparse.ArgumentParser()
-    parser.add_argument('--data-dir');parser.add_argument('--report')
+    parser.add_argument('--data-dir');parser.add_argument('--report');parser.add_argument('--gui',action='store_true')
     sub=parser.add_subparsers(dest='command')
     install=sub.add_parser('install');install.add_argument('--config');install.add_argument('--headless',action='store_true');install.add_argument('--preload');install.add_argument('--core-archive');install.add_argument('--payload-dir')
     remove=sub.add_parser('uninstall');remove.add_argument('--headless',action='store_true');remove.add_argument('--preload')
@@ -94,8 +42,12 @@ def main():
             subprocess.Popen([str(updater),'--processStart','Discord.exe',*args.arguments],creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
         else:subprocess.Popen(['discord',*[x for x in args.arguments if x!='--']],start_new_session=True)
         return 0
-    if sys.platform=='win32' and (args.command is None or args.command in ('install','uninstall') and not args.headless):
-        gui(args.command or 'install');return 0
+    if args.gui or sys.platform=='win32' and (args.command is None or args.command in ('install','uninstall') and not args.headless):
+        try:gui(args.command or 'install')
+        except ModuleNotFoundError as error:
+            if error.name!='tkinter':raise
+            emit({'ok':False,'message':'Para a interface gráfica no Linux, instale python3-tk (Ubuntu) ou tk (Arch/CachyOS). A instalação por terminal continua disponível.'},args.report);return 1
+        return 0
     from installation import install as run_install,uninstall,status,InstallError
     if args.command is None:
         choice=input('1. Instalar / reaplicar\n2. Verificar\n3. Desinstalar\nEscolha: ').strip()
