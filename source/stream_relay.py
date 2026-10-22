@@ -35,7 +35,7 @@ def valid_target(target):
         u=urlsplit(target)
         return (u.scheme=='wss' and bool(HOST.fullmatch(u.hostname or '')) and u.port in (None,443,2053,2083,2087,2096,8443)
             and u.path in ('','/') and not u.username and not u.password and not u.fragment
-            and parse_qs(u.query,strict_parsing=True) in ({'v':['9']},{'v':['10']}))
+            and parse_qs(u.query,strict_parsing=True) in ({'v':['8']},{'v':['9']},{'v':['10']}))
     except (ValueError,TypeError): return False
 
 def request_details(path,nonce):

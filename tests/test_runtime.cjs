@@ -38,6 +38,29 @@ delete roots.sender;for(const listener of listeners)listener();assert.equal(send
 ctx.__discordProtonStreams.remover();
 assert.equal(receiverSocket.createWebSocket,originalReceiver);assert.equal(listeners.size,0);assert.equal(ctx.WebSocket,WebSocket);
 console.log('OK: stream-only routing, unchanged main voice, stable resume identity, receivers-only test, automatic renewal and cleanup.');
+function updatedDiscordTest() {
+  const created=[],changes=new Set();
+  class NativeSocket {constructor(url){this.url=url;created.push(url);}}
+  const compat=vm.createContext({WebSocket:NativeSocket,URL,URLSearchParams,Proxy,Reflect,crypto,setTimeout});compat.window=compat;
+  let version=8;
+  const control={url:'wss://test-sfu.discord.media:2053/',createWebSocket(){return new compat.WebSocket(this.url+'?v='+version);}};
+  const root={context:'stream',state:'RTC_CONNECTED',_socket:control,isStreamSender:()=>false};
+  const streamStore={constructor:{displayName:'StreamRTCConnectionStore'},getRTCConnections:()=>({root}),addChangeListener:f=>changes.add(f),removeChangeListener:f=>changes.delete(f)};
+  const broken=new Proxy({},{get(){throw Error('UninitializedLazyExport');}});
+  compat.Vencord={Webpack:{findStore(){throw TypeError('Reflect.get called on non-object');},cache:{broken:{exports:{broken}},stream:{exports:{store:streamStore}}}}};
+  vm.runInContext(source,compat);
+  for(version of [8,9,10]) {
+    control.createWebSocket();
+    assert.equal(new URL(created.at(-1)).origin,'ws://127.0.0.1:19884');
+    assert.equal(new URL(new URL(created.at(-1)).searchParams.get('target')).searchParams.get('v'),String(version));
+  }
+  for(version of [7,11,'8&v=9','8&token=unexpected']) {
+    control.createWebSocket();assert.equal(new URL(created.at(-1)).protocol,'wss:');
+  }
+  compat.__discordProtonStreams.remover();assert.equal(changes.size,0);
+  console.log('OK: broken Vencord store lookup falls back to loaded exports; v8/9/10 allowed with query restrictions.');
+}
+updatedDiscordTest();
 async function lazyStartupTest(){
   let ready,starts=0,renewed=0;
   const delayed=[],created=[];

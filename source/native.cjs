@@ -38,7 +38,7 @@ function start(root){
  notice.catch(()=>{});
  require('./update.cjs').check(root,String(process.ppid)).then(()=>notice.then(()=>webFrame.executeJavaScript('window.__discordStreamTunnelUpdateNotice?.refresh()'))).catch(()=>{});
  const runtime=fs.readFileSync(path.join(__dirname,'runtime.template.js'),'utf8').replace('/*__CONFIG__*/null',JSON.stringify({relayPort:settings.relayPort,nonce:settings.nonce}));
- const boot=`(async()=>{for(let n=0;n<150;n++){try{if(window.Vencord?.Webpack?.findStore('StreamRTCConnectionStore')){${runtime};window.__discordProtonStreams?.automatico(true);return;}}catch{}await new Promise(r=>setTimeout(r,100));}})()`;
+ const boot=`(async()=>{for(let n=0;n<150;n++){try{${runtime};if(window.__discordProtonStreams){window.__discordProtonStreams.automatico(true);return;}}catch{}await new Promise(r=>setTimeout(r,100));}})()`;
  webFrame.executeJavaScript(boot).catch(()=>{});
 }
 module.exports={start};

@@ -31,8 +31,8 @@ existente sem pedir novamente o `.conf`.
 Flatpak e Snap não são cobertos.
 
 ```sh
-tar -xzf DiscordStreamTunnel-1.2.3-linux.tar.gz
-cd DiscordStreamTunnel-1.2.3-linux
+tar -xzf DiscordStreamTunnel-1.2.4-linux.tar.gz
+cd DiscordStreamTunnel-1.2.4-linux
 sh instalar.sh
 ```
 
@@ -43,6 +43,20 @@ com seu usuário normal. Instale Vencord pelas [instruções oficiais](https://v
 No Linux, a interface gráfica é opcional: instale `python3-tk` (Ubuntu) ou
 `tk` (CachyOS/Arch) e execute `python3 source/app.py --gui` dentro da pasta
 extraída. A instalação por terminal continua funcionando sem Tk.
+
+## O que mudou na 1.2.4
+
+- Corrige a inicialização quando a busca de stores do Vencord falha após uma
+  atualização do Discord. A integração procura o componente de transmissões
+  entre os módulos já carregados, preservando os controles nativos de mídia.
+- Sessões de transmissão com protocolo v8 também passam pelo túnel, junto
+  com v9 e v10. A voz principal continua direta. As restrições de destinos,
+  portas e parâmetros permanecem aplicadas.
+- Testes reproduzem a falha de busca do Vencord, verificam a inicialização
+  real do bootstrap e cobrem as três versões do protocolo.
+- O erro 2012 indica que o vídeo não ficou pronto no prazo. Esta versão
+  corrige os problemas de integração encontrados no diagnóstico; esse código
+  de erro, sozinho, não identifica todas as causas possíveis de tela preta.
 
 ## O que mudou na 1.2.3
 

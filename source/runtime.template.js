@@ -3,7 +3,22 @@
   const config = /*__CONFIG__*/null;
   const key = '__discordProtonStreams';
   if (window[key]) return window[key].status();
-  const W = Vencord.Webpack, store = W.findStore('StreamRTCConnectionStore');
+  const W = Vencord.Webpack;
+  function streamStore() {
+    const usable = value => value && typeof value.getRTCConnections === 'function'
+      && typeof value.addChangeListener === 'function' && typeof value.removeChangeListener === 'function';
+    try { const value = W.findStore('StreamRTCConnectionStore'); if (usable(value)) return value; } catch {}
+    // Some Vencord builds cannot populate their store map after Discord updates.
+    // Inspect only loaded exports; do not depend on the broken lazy Flux lookup.
+    for (const mod of Object.values(W.cache || {})) {
+      let values; try { values = [mod.exports, ...Object.values(mod.exports || {})]; } catch { continue; }
+      for (const value of values) try {
+        if (value?.constructor?.displayName === 'StreamRTCConnectionStore' && usable(value)) return value;
+      } catch {}
+    }
+    return null;
+  }
+  const store = streamStore();
   if (!store) throw new Error('Stream connection store unavailable');
   const wrapped = new Map();
   const watchedRoots = new Map();
@@ -35,7 +50,7 @@
       const u = new URL(target);
       return u.protocol === 'wss:' && /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.discord\.media$/.test(u.hostname)
         && portAllowed.has(u.port) && ['', '/'].includes(u.pathname) && !u.username && !u.password && !u.hash
-        && [...u.searchParams.keys()].length === 1 && ['9', '10'].includes(u.searchParams.get('v'));
+        && [...u.searchParams.keys()].length === 1 && ['8', '9', '10'].includes(u.searchParams.get('v'));
     } catch { return false; }
   }
   function attach(root) {

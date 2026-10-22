@@ -44,10 +44,10 @@ class FakeMedia:
 
 class TransportTests(unittest.IsolatedAsyncioTestCase):
     async def test_fresh_ready_replaces_media_but_resume_keeps_it(self):
-        for version in (9,10):
+        for version in (8,9,10):
             with self.subTest(version=version):
                 endpoint={'ip':'8.8.8.8','port':50000}
-                frames=([{'op':2,'d':endpoint}] if version==9 else
+                frames=([{'op':2,'d':endpoint}] if version in (8,9) else
                         [{'op':2,'d':{'ssrc':123}},{'op':33,'d':{'primary':endpoint}}])
                 media=[]
                 async def factory(settings,target,stats):
@@ -157,8 +157,9 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
     def test_restricted_control_targets_and_ready(self):
         for port in ('','2087','8443'):
             suffix=':'+port if port else ''
-            self.assertTrue(valid_target('wss://sfu-test.discord.media'+suffix+'/?v=9'))
-        for target in ('wss://127.0.0.1/?v=9','wss://x.discord.media.evil.test/?v=9','wss://x.discord.media:22/?v=9','wss://secret@x.discord.media/?v=9'):
+            for version in (8,9,10):
+                self.assertTrue(valid_target(f'wss://sfu-test.discord.media{suffix}/?v={version}'))
+        for target in ('wss://127.0.0.1/?v=9','wss://x.discord.media.evil.test/?v=9','wss://x.discord.media:22/?v=9','wss://secret@x.discord.media/?v=9','wss://x.discord.media/?v=7','wss://x.discord.media/?v=11','wss://x.discord.media/?v=8&v=9','wss://x.discord.media/?v=8&token=unexpected'):
             self.assertFalse(valid_target(target))
         self.assertIsNone(ready_target(b'\x00\xff\x01'))
         for host in ('127.0.0.1','10.0.0.1','169.254.169.254'):
