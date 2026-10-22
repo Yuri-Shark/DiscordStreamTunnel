@@ -121,10 +121,12 @@ class MediaBridge:
     @classmethod
     async def create(cls,settings,target,stats):
         socks=await asyncio.wait_for(SocksUDP.create(settings['socksPort'],'discord-stream',settings['nonce']),5)
+        socks.protocol.stats=stats
         bridge=cls(socks,target,stats)
         try:
             await asyncio.get_running_loop().create_datagram_endpoint(lambda:LocalDatagrams(bridge),local_addr=('127.0.0.1',0))
-            bridge.tasks=[asyncio.create_task(bridge.outbound()),asyncio.create_task(bridge.inbound())]
+            bridge.tasks=[asyncio.create_task(bridge.outbound()),asyncio.create_task(bridge.inbound()),
+                          asyncio.create_task(socks.watch_control())]
             return bridge
         except BaseException:
             await socks.close();raise
@@ -137,7 +139,10 @@ class MediaBridge:
             self.stats['udpUpBytes']+=len(data);self.stats['udpUpPackets']+=1
     async def inbound(self):
         while True:
-            target,data=await self.socks.receive()
+            try: target,data=await self.socks.receive()
+            except ValueError:
+                self.stats['udpMalformedPackets']=self.stats.get('udpMalformedPackets',0)+1
+                continue
             if target!=self.target or self.peer is None: continue
             self.transport.sendto(data,self.peer)
             self.stats['udpDownBytes']+=len(data);self.stats['udpDownPackets']+=1
@@ -156,9 +161,14 @@ class Relay:
         self.settings=settings;self.core=core or Core(settings);self.connector=connector;self.media_factory=media_factory
         self.sessions={};self.stopping=False
         self.stats={'openedControls':0,'activeControls':0,'controlUpBytes':0,'controlDownBytes':0,
-            'udpUpBytes':0,'udpDownBytes':0,'udpUpPackets':0,'udpDownPackets':0,'udpQueueDrops':0,'lastErrorClass':None}
+            'udpUpBytes':0,'udpDownBytes':0,'udpUpPackets':0,'udpDownPackets':0,'udpQueueDrops':0,
+            'udpReceiveQueueDrops':0,'udpMalformedPackets':0,'mediaResets':0,'lastErrorClass':None}
+        self.events=[]
         self.last_control=time.monotonic()
         self.warm_lock=asyncio.Lock();self.warmed_at=0;self.warmup_ms=None
+    def note(self,event,**details):
+        self.events.append({'at':time.time(),'event':event,**details})
+        del self.events[:-64]
     async def warm(self):
         async with self.warm_lock:
             if self.core.running and time.monotonic()-self.warmed_at<30:return
@@ -176,7 +186,7 @@ class Relay:
                 if socks:await socks.close()
     def health(self):
         return {'service':'DiscordStreamTunnel','protocolVersion':1,'pid':os.getpid(),'configurationReady':(BASE/'private-core.json').exists(),'coreRunning':self.core.running,
-            'version':VERSION,'warmupMs':self.warmup_ms,
+            'version':VERSION,'buildRevision':'recovery-20261021','warmupMs':self.warmup_ms,
             'activeControls':self.stats['activeControls'],'mediaBridges':sum(x.media is not None for x in self.sessions.values()),
             'scope':'Discord screen-stream sessions only; no system routes or DNS'}
     async def validate(self,connection,request):
@@ -202,12 +212,20 @@ class Relay:
             self.stats['controlUpBytes']+=len(frame.encode() if isinstance(frame,str) else frame)
     async def pump_down(self,upstream,client,session):
         async for frame in upstream:
+            # A fresh READY invalidates old media even in v10, where the new
+            # endpoint arrives later via SFU_UPDATE. Resume (op 9) preserves it.
+            fresh=media_message(frame,2) is not None
             endpoint=ready_target(frame) or sfu_target(frame)
+            if fresh and session.media is not None:
+                previous=session.media;session.media=None;session.media_target=None
+                await previous.close()
+                self.stats['mediaResets']+=1;self.note('media-reset',opcode=2)
             if endpoint is not None:
                 message,target=endpoint
                 if session.media is not None and session.media_target!=target:
                     previous=session.media;session.media=None;session.media_target=None
                     await previous.close()
+                    self.stats['mediaResets']+=1;self.note('media-reset',opcode=message['op'])
                 if target is not None:
                     if session.media is None:
                         session.media=await self.media_factory(self.settings,target,self.stats)
@@ -231,19 +249,28 @@ class Relay:
             proxy=f"socks5h://discord-stream:{quote(self.settings['nonce'],safe='')}@127.0.0.1:{self.settings['socksPort']}"
             async with self.connector(target,proxy=proxy,origin='https://discord.com',compression=None,ping_interval=None,open_timeout=15,close_timeout=2,max_size=1048576,max_queue=16) as upstream:
                 self.stats['openedControls']+=1;self.stats['lastErrorClass']=None
+                self.note('control-open')
                 tasks=[asyncio.create_task(self.pump_up(client,upstream)),asyncio.create_task(self.pump_down(upstream,client,session))]
                 try:
                     done,_=await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
                     for task in done: task.result()
+                    # A normal upstream close ends iteration without raising.
+                    # Propagate it so the client can reconnect immediately.
+                    if tasks[1] in done:
+                        code=getattr(upstream,'close_code',None) or 1000
+                        await client.close(code=code if code in (1000,1001) or 3000<=code<=4999 else 1011)
+                        self.note('control-close',code=code)
                 finally:
                     for task in tasks: task.cancel()
                     await asyncio.gather(*tasks,return_exceptions=True)
         except ConnectionClosed as error:
             code=error.rcvd.code if error.rcvd else 1011
+            self.note('control-close',code=code)
             if code not in (1000,1001) and not 3000<=code<=4999: code=1011
             with suppress(Exception): await client.close(code=code)
         except Exception as error:
             self.stats['lastErrorClass']=type(error).__name__
+            self.note('control-error',errorClass=type(error).__name__)
             with suppress(Exception): await client.close(1011)
         finally:
             session.active=False;session.closed_at=time.monotonic()
@@ -254,13 +281,16 @@ class Relay:
             for sid,session in list(self.sessions.items()):
                 if session.active and session.media and any(task.done() for task in session.media.tasks):
                     self.stats['lastErrorClass']='MediaTransportClosed'
-                    with suppress(Exception):await session.client.close(1011)
+                    self.note('media-transport-closed')
+                    # A broken association cannot be resumed. Ask for fresh
+                    # identification / READY rather than reusing dead media.
+                    with suppress(Exception):await session.client.close(4006)
                 if not session.active and now-session.closed_at>self.settings['idleSeconds']:
                     if session.media: await session.media.close()
                     self.sessions.pop(sid,None)
             if not self.sessions and not self.stats['activeControls'] and now-self.last_control>self.settings.get('warmIdleSeconds',120):
                 await self.core.stop()
-            record={'pid':os.getpid(),'corePID':self.core.process.pid if self.core.running else None,'updatedAt':time.time(),**self.health(),**self.stats}
+            record={'pid':os.getpid(),'corePID':self.core.process.pid if self.core.running else None,'updatedAt':time.time(),**self.health(),**self.stats,'recentEvents':self.events}
             temp=BASE/'status.tmp';temp.write_text(json.dumps(record,indent=2),encoding='utf-8');temp.replace(BASE/'status.json')
             await asyncio.sleep(2)
     async def close(self):

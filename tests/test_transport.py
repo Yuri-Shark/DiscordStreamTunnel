@@ -4,12 +4,16 @@ from contextlib import asynccontextmanager
 import json
 import socket
 import struct
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 from urllib.parse import urlencode
 
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import serve
-from websockets.exceptions import InvalidStatus
+from websockets.exceptions import InvalidStatus,ConnectionClosed
 
 from configuration import make_core_config
 from socks_udp import SocksUDP,PacketQueue,pack_packet,unpack_packet
@@ -39,6 +43,106 @@ class FakeMedia:
     async def close(self): self.closed=True
 
 class TransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_fresh_ready_replaces_media_but_resume_keeps_it(self):
+        for version in (9,10):
+            with self.subTest(version=version):
+                endpoint={'ip':'8.8.8.8','port':50000}
+                frames=([{'op':2,'d':endpoint}] if version==9 else
+                        [{'op':2,'d':{'ssrc':123}},{'op':33,'d':{'primary':endpoint}}])
+                media=[]
+                async def factory(settings,target,stats):
+                    bridge=FakeMedia();bridge.local_port=54321+len(media);media.append(bridge);return bridge
+                relay=Relay({'nonce':'synthetic','socksPort':19885},core=FakeCore(),media_factory=factory)
+                session=StreamSession(f'wss://test.discord.media/?v={version}')
+                async def pump(messages):
+                    upstream=FakeUpstream([json.dumps(frame) for frame in messages]);client=FakeUpstream([])
+                    task=asyncio.create_task(relay.pump_down(upstream,client,session))
+                    async def received():
+                        while len(client.received)<len(messages):
+                            if task.done():task.result()
+                            await asyncio.sleep(.001)
+                    try:
+                        await asyncio.wait_for(received(),2)
+                        return [json.loads(frame) for frame in client.received]
+                    finally:
+                        task.cancel();await asyncio.gather(task,return_exceptions=True)
+                try:
+                    await pump(frames)
+                    first=session.media
+                    # Buffered resume must preserve the local UDP port / peer.
+                    await pump([{'op':9,'d':None}])
+                    self.assertIs(session.media,first);self.assertFalse(first.closed)
+                    if version==10:
+                        await pump(frames[:1])
+                        self.assertTrue(first.closed);self.assertIsNone(session.media)
+                        result=await pump(frames[1:])
+                        port=result[0]['d']['primary']['port']
+                    else:
+                        result=await pump(frames)
+                        port=result[0]['d']['port']
+                    self.assertTrue(first.closed);self.assertIsNot(session.media,first)
+                    self.assertNotEqual(port,first.local_port)
+                    self.assertEqual(relay.stats['mediaResets'],1)
+                finally:
+                    if session.media:await session.media.close()
+                    await relay.close()
+
+    async def test_normal_upstream_close_is_forwarded_without_waiting_for_heartbeat(self):
+        class ClosedUpstream(FakeUpstream):
+            close_code=1001
+            async def __anext__(self):raise StopAsyncIteration
+        @asynccontextmanager
+        async def connector(target,**kwargs):
+            yield ClosedUpstream([])
+        relay=Relay({'nonce':'synthetic','socksPort':19885},core=FakeCore(),connector=connector)
+        try:
+            async with serve(relay.handle,'127.0.0.1',0,compression=None) as server:
+                port=server.sockets[0].getsockname()[1]
+                url=f'ws://127.0.0.1:{port}/relay?'+urlencode({'nonce':'synthetic','target':'wss://test.discord.media/?v=9','sid':'a'*32})
+                async with connect(url,proxy=None) as client:
+                    with self.assertRaises(ConnectionClosed) as error:
+                        await asyncio.wait_for(client.recv(),2)
+                    self.assertEqual(error.exception.rcvd.code,1001)
+        finally:await relay.close()
+
+    async def test_association_eof_requests_fresh_identification(self):
+        reader=asyncio.StreamReader()
+        socks=SocksUDP(reader,None,None,None,None)
+        watcher=asyncio.create_task(socks.watch_control());reader.feed_eof()
+        await asyncio.sleep(0)
+        self.assertTrue(watcher.done())
+        self.assertIsInstance(watcher.exception(),ConnectionError)
+        closes=[]
+        class Client:
+            async def close(self,code):closes.append(code)
+        class Bridge:
+            tasks=[watcher]
+            async def close(self):pass
+        core=FakeCore();core.process=SimpleNamespace(pid=1)
+        relay=Relay({'idleSeconds':40},core=core)
+        session=StreamSession('wss://test.discord.media/?v=9')
+        session.active=True;session.media=Bridge();session.client=Client()
+        relay.sessions['a'*32]=session;relay.stats['activeControls']=1
+        with tempfile.TemporaryDirectory() as directory,patch('stream_relay.BASE',Path(directory)):
+            task=asyncio.create_task(relay.maintain())
+            async def closed():
+                while not closes:
+                    if task.done():task.result()
+                    await asyncio.sleep(.001)
+            try:
+                await asyncio.wait_for(closed(),2)
+                self.assertEqual(closes,[4006])
+                self.assertEqual(relay.stats['lastErrorClass'],'MediaTransportClosed')
+            finally:
+                task.cancel();await asyncio.gather(task,return_exceptions=True)
+                await relay.close()
+
+    def test_receive_queue_loss_is_counted(self):
+        protocol=PacketQueue();stats={};protocol.stats=stats
+        for _ in range(1027):protocol.datagram_received(b'packet',('127.0.0.1',1))
+        self.assertEqual(protocol.drops,3)
+        self.assertEqual(stats['udpReceiveQueueDrops'],3)
+
     def test_configuration_no_global_interface_or_dns(self):
         key=base64.b64encode(bytes(range(32))).decode()
         source=f'[Interface]\nPrivateKey={key}\nAddress=10.2.0.2/32\nDNS=10.2.0.1\n[Peer]\nPublicKey={key}\nAllowedIPs=0.0.0.0/0,::/0\nEndpoint=1.1.1.1:51820\n'
@@ -148,7 +252,8 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             finally: writer.close()
         server=await asyncio.start_server(socks,'127.0.0.1',0)
         stats={'udpQueueDrops':0,'udpUpBytes':0,'udpDownBytes':0,'udpUpPackets':0,'udpDownPackets':0}
-        bridge=None;client,client_protocol=await loop.create_datagram_endpoint(PacketQueue,local_addr=('127.0.0.1',0))
+        bridge=None;new_client=None;relay=None
+        client,client_protocol=await loop.create_datagram_endpoint(PacketQueue,local_addr=('127.0.0.1',0))
         try:
             bridge=await MediaBridge.create({'socksPort':server.sockets[0].getsockname()[1],'nonce':'synthetic'},('8.8.8.8',50000),stats)
             for payload in (b'\0\1\0H'+bytes(range(70)),b'\x80\x60\x00\xff'+b'encrypted-placeholder'*40):
@@ -157,8 +262,38 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(received,payload)
             self.assertEqual(stats['udpUpPackets'],2);self.assertEqual(stats['udpDownPackets'],2)
             self.assertEqual(stats['udpUpBytes'],stats['udpDownBytes'])
+            # Malformed SOCKS input must not kill the receive task.
+            bridge.socks.protocol.datagram_received(b'bad-socks-packet',bridge.socks.relay)
+            client.sendto(b'after-malformed',('127.0.0.1',bridge.local_port))
+            self.assertEqual((await asyncio.wait_for(client_protocol.queue.get(),2))[0],b'after-malformed')
+            self.assertEqual(stats['udpMalformedPackets'],1)
+            # Re-identify to the same SFU with a new native Discord UDP socket.
+            # It must receive replies through a fresh bridge, not the old peer.
+            settings={'socksPort':server.sockets[0].getsockname()[1],'nonce':'synthetic'}
+            relay=Relay(settings,core=FakeCore())
+            session=StreamSession('wss://test.discord.media/?v=9')
+            session.media=bridge;session.media_target=('8.8.8.8',50000)
+            relay.sessions['a'*32]=session
+            upstream=FakeUpstream([json.dumps({'op':2,'d':{'ip':'8.8.8.8','port':50000}})])
+            control=FakeUpstream([])
+            task=asyncio.create_task(relay.pump_down(upstream,control,session))
+            async def ready():
+                while not control.received:
+                    if task.done():task.result()
+                    await asyncio.sleep(.001)
+            try:
+                await asyncio.wait_for(ready(),2)
+            finally:
+                task.cancel();await asyncio.gather(task,return_exceptions=True)
+            endpoint=json.loads(control.received[0])['d']
+            new_client,new_protocol=await loop.create_datagram_endpoint(PacketQueue,local_addr=('127.0.0.1',0))
+            self.assertIsNot(session.media,bridge)
+            new_client.sendto(b'new-discord-socket',('127.0.0.1',endpoint['port']))
+            self.assertEqual((await asyncio.wait_for(new_protocol.queue.get(),2))[0],b'new-discord-socket')
         finally:
             client.close()
+            if new_client:new_client.close()
+            if relay:await relay.close()
             if bridge: await bridge.close()
             server.close();await server.wait_closed();echo.close()
         self.assertFalse(errors)

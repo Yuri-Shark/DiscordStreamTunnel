@@ -19,10 +19,12 @@ def unpack_packet(data):
     return (host,struct.unpack('!H',data[4+length:6+length])[0]),data[6+length:]
 
 class PacketQueue(asyncio.DatagramProtocol):
-    def __init__(self): self.queue=asyncio.Queue(maxsize=1024)
+    def __init__(self): self.queue=asyncio.Queue(maxsize=1024);self.drops=0;self.stats=None
     def datagram_received(self,data,source):
         try: self.queue.put_nowait((data,source))
-        except asyncio.QueueFull: pass
+        except asyncio.QueueFull:
+            self.drops+=1
+            if self.stats is not None:self.stats['udpReceiveQueueDrops']=self.stats.get('udpReceiveQueueDrops',0)+1
 
 class SocksUDP:
     def __init__(self,reader,writer,transport,protocol,relay):
@@ -55,6 +57,11 @@ class SocksUDP:
             raise
     async def send(self,target,data):
         self.transport.sendto(pack_packet(target,data),self.relay)
+    async def watch_control(self):
+        # RFC 1928: closing TCP also terminates the UDP association. UDP
+        # receive alone would otherwise wait forever after a core failure.
+        await self.reader.read(1)
+        raise ConnectionError('SOCKS UDP association closed')
     async def receive(self):
         while True:
             packet,source=await self.protocol.queue.get()

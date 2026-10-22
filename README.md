@@ -31,8 +31,8 @@ existente sem pedir novamente o `.conf`.
 Flatpak e Snap não são cobertos.
 
 ```sh
-tar -xzf DiscordStreamTunnel-1.2.0-linux.tar.gz
-cd DiscordStreamTunnel-1.2.0-linux
+tar -xzf DiscordStreamTunnel-1.2.2-linux.tar.gz
+cd DiscordStreamTunnel-1.2.2-linux
 sh instalar.sh
 ```
 
@@ -43,6 +43,21 @@ com seu usuário normal. Instale Vencord pelas [instruções oficiais](https://v
 No Linux, a interface gráfica é opcional: instale `python3-tk` (Ubuntu) ou
 `tk` (CachyOS/Arch) e execute `python3 source/app.py --gui` dentro da pasta
 extraída. A instalação por terminal continua funcionando sem Tk.
+
+## O que mudou na 1.2.2
+
+- Reconexões com uma nova sessão de mídia recriam a ponte UDP, mesmo quando
+  o servidor continua no mesmo endereço. Isso evita reutilizar a porta antiga
+  do Discord e ficar preso no carregamento depois de uma queda. Retomadas
+  válidas continuam preservando a ponte existente.
+- O encerramento da associação SOCKS pede uma nova sessão, e fechamentos
+  normais do servidor são repassados imediatamente ao cliente.
+- Datagramas SOCKS inválidos não encerram a recepção. O status registra perdas
+  na fila de recepção e um histórico limitado de eventos de conexão, sem
+  conteúdo de mídia, tokens ou chaves.
+- Testes de regressão cobrem as reconexões v9/v10, a troca da porta UDP local
+  e o encerramento do transporte. A correção melhora a recuperação; oscilações
+  e perdas na rota de rede ainda podem afetar a transmissão.
 
 ## O que mudou na 1.2.1
 
