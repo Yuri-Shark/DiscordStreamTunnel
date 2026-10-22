@@ -30,6 +30,11 @@ async function firstConnection(sender) {
   assert.equal(new URL(calls[0]).origin, 'ws://127.0.0.1:19884');
   const session = new URL(calls[0]).searchParams.get('sid');
   root._socket.createWebSocket();
+  assert.equal(starts,2,'reconnections must revalidate helper readiness');
+  assert.equal(calls.length,1,'a reconnect must wait for the helper too');
+  release();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.length,2);
   assert.equal(new URL(calls.at(-1)).searchParams.get('sid'), session);
   const current = root._socket;
   const voice = makeSocket();
@@ -48,5 +53,5 @@ async function firstConnection(sender) {
 (async () => {
   await firstConnection(true);
   await firstConnection(false);
-  console.log('OK: first sender and receiver connections wait for the tunnel; voice and cleanup preserved.');
+  console.log('OK: sender/receiver startup and reconnections revalidate the helper; voice and cleanup preserved.');
 })().catch(error => {console.error(error); process.exitCode = 1;});

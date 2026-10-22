@@ -69,5 +69,5 @@ class SocksUDP:
                 return unpack_packet(packet)
     async def close(self):
         self.transport.close();self.writer.close()
-        try: await self.writer.wait_closed()
+        try: await asyncio.wait_for(self.writer.wait_closed(),1)
         except Exception: pass

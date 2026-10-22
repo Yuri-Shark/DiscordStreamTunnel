@@ -31,8 +31,8 @@ existente sem pedir novamente o `.conf`.
 Flatpak e Snap não são cobertos.
 
 ```sh
-tar -xzf DiscordStreamTunnel-1.2.2-linux.tar.gz
-cd DiscordStreamTunnel-1.2.2-linux
+tar -xzf DiscordStreamTunnel-1.2.3-linux.tar.gz
+cd DiscordStreamTunnel-1.2.3-linux
 sh instalar.sh
 ```
 
@@ -43,6 +43,25 @@ com seu usuário normal. Instale Vencord pelas [instruções oficiais](https://v
 No Linux, a interface gráfica é opcional: instale `python3-tk` (Ubuntu) ou
 `tk` (CachyOS/Arch) e execute `python3 source/app.py --gui` dentro da pasta
 extraída. A instalação por terminal continua funcionando sem Tk.
+
+## O que mudou na 1.2.3
+
+- Reconexões de envio e recepção verificam novamente o auxiliar. Uma abertura
+  nova do Discord aguarda o auxiliar da instância anterior encerrar, em vez
+  de aceitar um processo que está prestes a sair.
+- Falhas de proxy e timeouts passam a verificar a conectividade pelo próprio
+  túnel. Duas verificações malsucedidas permitem reiniciar o núcleo que o addon
+  iniciou, com intervalo mínimo de 30 segundos e preservando conexões saudáveis.
+- Após reiniciar o núcleo, as pontes antigas são descartadas e o Discord recebe
+  uma indicação para negociar uma sessão nova. Falhas de conexões anteriores
+  não reiniciam o núcleo recém-recuperado.
+- O diagnóstico distingue processo aberto de conectividade verificada e inclui
+  o processo do Discord responsável, a geração do núcleo e os reinícios.
+  Um bloqueio temporário ao gravar o status não encerra o serviço de mídia.
+- Testes cobrem concorrência, recuperação após falhas de proxy, proteção de
+  transmissões saudáveis e a troca de instância do Discord. Indisponibilidade
+  externa do Proton ou da rede ainda pode impedir a conexão; a recuperação
+  automática não garante resolver uma queda do servidor ou da operadora.
 
 ## O que mudou na 1.2.2
 
@@ -178,6 +197,9 @@ público não contêm configurações de conta, tokens, cookies ou chaves privad
 ```sh
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=source:source/vendor python3 -m unittest discover -s tests -p 'test_*.py' -v
 node tests/test_runtime.cjs
+node tests/test_stream_startup.cjs
+node tests/test_native.cjs
+node tests/test_helper_recovery.cjs
 node tests/test_updates.cjs
 node tests/test_sign_release.cjs
 node tests/test_update_notice.cjs

@@ -42,7 +42,7 @@ async function lazyStartupTest(){
   let ready,starts=0,renewed=0;
   const delayed=[],created=[];
   class NativeSocket {constructor(url){this.url=url;created.push(url);}}
-  const lazy=vm.createContext({WebSocket:NativeSocket,URL,URLSearchParams,Proxy,Reflect,crypto,setTimeout:f=>delayed.push(f),DiscordProtonStreamsNative:{ensureHelper(){starts++;return new Promise(r=>{ready=r;});}}});lazy.window=lazy;
+  const lazy=vm.createContext({WebSocket:NativeSocket,URL,URLSearchParams,Proxy,Reflect,crypto,setTimeout:f=>delayed.push(f),DiscordProtonStreamsNative:{ensureHelper(){starts++;return starts===1?new Promise(r=>{ready=r;}):Promise.resolve();}}});lazy.window=lazy;
   const control={url:'wss://test-sfu.discord.media:8443/',webSocket:{url:'wss://test-sfu.discord.media:8443/?v=9'},createWebSocket(){this.webSocket=new lazy.WebSocket(this.url+'?v=9');}};
   const root={context:'stream',state:'RTC_CONNECTED',_socket:control,isStreamSender:()=>false,reconnect(){renewed++;control.createWebSocket();}};
   const changes=new Set();
@@ -51,6 +51,7 @@ async function lazyStartupTest(){
   assert.equal(starts,1);assert.equal(renewed,0);assert.equal(delayed.length,0);
   ready();await new Promise(r=>setImmediate(r));
   while(delayed.length)delayed.shift()();
+  await new Promise(r=>setImmediate(r));
   assert.equal(renewed,1);assert.equal(new URL(created.at(-1)).origin,'ws://127.0.0.1:19884');
   lazy.__discordProtonStreams.remover();
   console.log('OK: helper starts on demand; stream reconnect waits for readiness.');

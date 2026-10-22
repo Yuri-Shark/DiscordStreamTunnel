@@ -46,8 +46,13 @@
     const record = {original, root, session: crypto.randomUUID().replaceAll('-', ''), replacement: null, renewed: false,retries:0,retryAt:0,
       ready: typeof window.DiscordProtonStreamsNative?.ensureHelper !== 'function', starting: false};
     record.replacement = function (...factoryArgs) {
-      if(enabled&&automatic&&!record.ready){record.pendingFactory={self:this,args:factoryArgs};scan();return;}
+      if(enabled&&automatic&&typeof window.DiscordProtonStreamsNative?.ensureHelper==='function'){
+        record.pendingFactory={self:this,args:factoryArgs};record.ready=false;scan();return;
+      }
       if (!enabled || !record.ready) return original.apply(this, factoryArgs);
+      return record.open.apply(this,factoryArgs);
+    };
+    record.open = function (...factoryArgs) {
       const previous = window.WebSocket, expected = new URL(this.url).origin;
       const StreamSocket = new Proxy(previous, {
         construct(Target, args) {
@@ -111,8 +116,8 @@
         if (automatic && record && !record.ready && !record.starting && Date.now()>=record.retryAt) {
           record.starting = true;
           Promise.resolve(window.DiscordProtonStreamsNative.ensureHelper()).then(() => {
-            record.ready = true; record.starting = false;
-            if(record.pendingFactory){const pending=record.pendingFactory;record.pendingFactory=null;if(enabled&&wrapped.get(socket)===record)record.replacement.apply(pending.self,pending.args);}
+            record.ready = true; record.starting = false;record.retries=0;record.retryAt=0;lastError=null;
+            if(record.pendingFactory){const pending=record.pendingFactory;record.pendingFactory=null;if(enabled&&automatic&&wrapped.get(socket)===record&&root._socket===socket)record.open.apply(pending.self,pending.args);}
             if (enabled && automatic) scan();
           }).catch(() => {record.starting = false;lastError='HelperUnavailable';record.retryAt=Date.now()+Math.min(5000,250*2**record.retries++);if(enabled&&automatic)setTimeout(scan,Math.max(0,record.retryAt-Date.now()));});
         }
