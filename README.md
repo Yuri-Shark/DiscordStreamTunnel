@@ -12,6 +12,9 @@ exigem aviso prévio ao usuário.
 ## Instalar
 
 Baixe os pacotes em [Releases](https://github.com/Yuri-Shark/DiscordStreamTunnel/releases/latest).
+O [guia de primeira instalação em HTML](LEIA-ME-PRIMEIRO.html) pode ser aberto
+offline no navegador. Ele acompanha os pacotes Windows/Linux e também é gerado
+como arquivo separado para anexar à release.
 É necessário Discord desktop nativo com Vencord e um `.conf` WireGuard
 da **própria conta Proton**. O portal permite gerar configurações no plano gratuito:
 [instruções oficiais](https://protonvpn.com/support/wireguard-configurations).
@@ -31,8 +34,8 @@ existente sem pedir novamente o `.conf`.
 Flatpak e Snap não são cobertos.
 
 ```sh
-tar -xzf DiscordStreamTunnel-1.2.4-linux.tar.gz
-cd DiscordStreamTunnel-1.2.4-linux
+tar -xzf DiscordStreamTunnel-1.3.0-linux.tar.gz
+cd DiscordStreamTunnel-1.3.0-linux
 sh instalar.sh
 ```
 
@@ -43,6 +46,38 @@ com seu usuário normal. Instale Vencord pelas [instruções oficiais](https://v
 No Linux, a interface gráfica é opcional: instale `python3-tk` (Ubuntu) ou
 `tk` (CachyOS/Arch) e execute `python3 source/app.py --gui` dentro da pasta
 extraída. A instalação por terminal continua funcionando sem Tk.
+
+## O que mudou na 1.3.0
+
+- O auxiliar e o núcleo permanecem preparados enquanto o processo do Discord
+  estiver aberto. O aquecimento passa a verificar o túnel a cada 30 segundos;
+  falhas usam espera progressiva de 5 até 60 segundos. Uma consulta DNS lenta
+  em segundo plano não bloqueia a abertura de uma transmissão.
+- A abertura do controle tenta novamente uma vez em falhas transitórias de
+  rede/proxy, dentro do orçamento original de 15 segundos e antes de encaminhar
+  qualquer mensagem. Sair da tela cancela uma
+  conexão pendente. Mensagens de autenticação, retomada e mídia não são repetidas.
+- A descoberta UDP inicial repete somente a consulta de IP, até três vezes,
+  se houver perda. A ausência da resposta correspondente por oito segundos
+  descarta a ponte e solicita uma sessão nova ao Discord. Silêncio durante
+  vídeo pausado não dispara reconexões.
+- Uma falha temporária ao acessar o proxy local não substitui silenciosamente
+  o núcleo em uso. Controles sem mídia têm uma tolerância inicial de 15 segundos;
+  transmissões que já receberam UDP permanecem protegidas contra reinícios
+  provocados pela falha de outra conexão.
+- Trocar rapidamente entre transmissões pode reaproveitar o espaço de sessões
+  inativas, evitando um bloqueio temporário por sessões antigas no limite.
+- **Verificar** grava `data/diagnostico.json`, com etapas, tempos, contadores e
+  eventos limitados. O relatório filtra caminhos, endereços, tokens, chaves e
+  conteúdo de mídia. Também pode ser gerado com `launcher.py diagnose` no Linux
+  ou `DiscordStreamTunnel.exe diagnose` no Windows.
+- As releases incluem `LEIA-ME-PRIMEIRO.html`, com instalação, reparo e coleta
+  do diagnóstico. A [análise técnica](docs/ANALISE-CONEXAO.md) descreve as falhas,
+  proteções, testes e limitações da validação.
+
+Essas mudanças reduzem causas identificadas de conexão fria e carregamento
+preso. Ainda é necessário validar envio e recepção em chamadas reais; testes
+locais não garantem ausência de quedas externas ou de falhas de vídeo do Discord.
 
 ## O que mudou na 1.2.4
 
@@ -192,8 +227,12 @@ Reinstalações externas do Vencord podem exigir abrir pelo atalho ou reaplicar.
 ## Funcionamento e remoção
 
 Somente o Discord precisa ficar aberto. O app Proton e o instalador podem
-ficar fechados. O auxiliar trabalha em segundo plano e encerra após cerca de
-dois minutos sem uso; bridges de mídia são mantidas brevemente para retomadas.
+ficar fechados. O auxiliar mantém o túnel preparado enquanto o processo do
+Discord estiver aberto e encerra quando esse processo sai. Isso mantém algum
+consumo de memória e pequenos pacotes periódicos mesmo sem transmissão.
+Bridges de mídia inativas são mantidas brevemente para retomadas. Execuções
+avulsas do worker, sem um processo proprietário, preservam o desligamento
+por inatividade.
 O túnel não altera a rota padrão, o DNS nem o proxy global do sistema.
 
 Para remover, encerre o Discord e use **Desinstalar** no instalador. No Linux,
@@ -235,8 +274,9 @@ node scripts/sign_release.cjs /pasta-privada/release-signing-private.pem --compa
 
 O script valida a assinatura anterior e deriva dela o endereço de
 compatibilidade. Publique **ambos** os manifestos, `runtime-bundle.json.gz` e
-os pacotes Windows/Linux na nova release, marcada como a mais recente. Não
-troque a chave nem publique apenas um dos manifestos: instalações antigas
+os pacotes Windows/Linux na nova release, marcada como a mais recente.
+Inclua também `LEIA-ME-PRIMEIRO.html` e `SHA256SUMS.txt` gerados em `release/`.
+Não troque a chave nem publique apenas um dos manifestos: instalações antigas
 dependem desse caminho de migração. Commits, tags e releases anteriores são
 preservados como histórico do projeto.
 

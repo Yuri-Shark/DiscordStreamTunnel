@@ -13,9 +13,17 @@ import zipfile
 ROOT=Path(__file__).resolve().parents[1]
 VERSION=json.loads((ROOT/'source'/'version.json').read_text())['version']
 output=ROOT/'release';output.mkdir(exist_ok=True)
+GUIDE='LEIA-ME-PRIMEIRO.html'
+def copy_documents(destination):
+    for name in ('README.md','LICENSE.txt','SECURITY.md',GUIDE,'docs/ANALISE-CONEXAO.md'):
+        target=destination/name;target.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copy2(ROOT/name,target)
+
 linux=output/('DiscordStreamTunnel-'+VERSION+'-linux');linux.mkdir(exist_ok=True)
 shutil.copytree(ROOT/'source',linux/'source',dirs_exist_ok=True,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
-for name in ('instalar.sh','README.md','LICENSE.txt','SECURITY.md'):shutil.copy2(ROOT/name,linux/name)
+shutil.copy2(ROOT/GUIDE,output/GUIDE)
+copy_documents(linux)
+shutil.copy2(ROOT/'instalar.sh',linux/'instalar.sh')
 for file in linux.rglob('*'):
     if file.is_file():file.write_bytes(file.read_bytes().replace(b'\r\n',b'\n'))
 def meta(info):
@@ -29,7 +37,7 @@ bundle={'version':VERSION,'files':files}
 (output/'runtime-bundle.json.gz').write_bytes(gzip.compress(json.dumps(bundle,separators=(',',':')).encode(),mtime=0))
 windows=output/('DiscordStreamTunnel-'+VERSION+'-Windows-x64');windows.mkdir(exist_ok=True)
 shutil.copytree(ROOT/'dist'/'DiscordStreamTunnel',windows,dirs_exist_ok=True)
-for name in ('README.md','LICENSE.txt','SECURITY.md'):shutil.copy2(ROOT/name,windows/name)
+copy_documents(windows)
 build_info={'version':VERSION,'python':sys.version.split()[0],'openssl':ssl.OPENSSL_VERSION,
             'sourceCommit':subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
             'sourceTreeClean':not bool(subprocess.check_output(['git','status','--porcelain'],cwd=ROOT,text=True).strip()),

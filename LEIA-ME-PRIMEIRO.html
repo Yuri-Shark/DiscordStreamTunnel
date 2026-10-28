@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>DiscordStreamTunnel — Primeira instalação</title>
+  <style>
+    :root{color-scheme:dark;--bg:#182128;--panel:#23313b;--text:#ecf2f6;--muted:#b8c7d1;--accent:#a7b0ff}
+    *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:17px/1.65 system-ui,sans-serif}
+    main{max-width:900px;margin:auto;padding:40px 24px 70px}header{border-bottom:1px solid #455561;padding-bottom:24px}
+    h1{font-size:2rem;line-height:1.2}h2{margin-top:38px;font-size:1.4rem}h3{font-size:1.1rem}
+    a{color:var(--accent)}code,pre{background:#10191f;border-radius:5px}code{padding:2px 5px;overflow-wrap:anywhere}
+    pre{padding:16px;overflow-x:auto}pre code{padding:0}.note{background:var(--panel);border-left:4px solid var(--accent);padding:14px 18px;margin:24px 0}
+    li{margin:10px 0}small,.muted{color:var(--muted)}nav a{display:inline-block;margin-right:18px}button{font:inherit}
+    @media print{body{background:white;color:black}a{color:#243c80}.note,code,pre{background:#eee}main{padding:0}}
+  </style>
+</head>
+<body><main>
+  <header>
+    <p class="muted">DiscordStreamTunnel · Guia que funciona offline</p>
+    <h1>Primeira instalação, passo a passo</h1>
+    <p>O programa encaminha o compartilhamento de tela do Discord por um túnel Proton WireGuard.
+      A voz principal da chamada e os outros aplicativos continuam pela conexão normal.</p>
+    <nav aria-label="Conteúdo"><a href="#preparar">Preparar</a><a href="#windows">Windows</a><a href="#linux">Linux</a><a href="#problemas">Resolver problemas</a><a href="#remover">Remover</a></nav>
+  </header>
+  <section id="preparar">
+    <h2>1. Antes de começar</h2>
+    <ol>
+      <li>Instale o <strong>Discord desktop nativo</strong>. O navegador, Flatpak e Snap não são cobertos por este instalador.</li>
+      <li>Instale o <strong>Vencord</strong> no mesmo Discord, seguindo as <a href="https://vencord.dev/download/">instruções oficiais do Vencord</a>. Depois de uma atualização do Discord, confirme que o Vencord continua instalado.</li>
+      <li>Na <strong>sua própria conta Proton VPN</strong>, gere e baixe um arquivo de configuração <strong>WireGuard <code>.conf</code></strong>.
+        Consulte as <a href="https://protonvpn.com/support/wireguard-configurations">instruções oficiais da Proton</a> se precisar gerar o arquivo.</li>
+      <li>Baixe o pacote do seu sistema na <a href="https://github.com/Yuri-Shark/DiscordStreamTunnel/releases/latest">release oficial</a>.
+        Os links externos desta página precisam de internet; as instruções de instalação podem ser lidas offline.</li>
+    </ol>
+    <div class="note"><strong>Seu <code>.conf</code> contém uma chave privada.</strong> Não envie esse arquivo, a pasta <code>data</code> ou a pasta instalada a outras pessoas. Cada usuário deve usar a configuração da própria conta.</div>
+  </section>
+  <section id="windows">
+    <h2>2. Instalar no Windows x64</h2>
+    <ol>
+      <li>Extraia <strong>todo</strong> o ZIP <code>DiscordStreamTunnel-VERSÃO-Windows-x64.zip</code> para uma pasta. Não execute o programa de dentro do ZIP nem separe o <code>.exe</code> da pasta <code>_internal</code>.</li>
+      <li>Encerre o Discord completamente, inclusive pelo ícone perto do relógio: clique com o botão direito e escolha sair.</li>
+      <li>Abra <code>DiscordStreamTunnel.exe</code>, selecione seu arquivo Proton <code>.conf</code> e clique em <strong>Instalar / reaplicar</strong>.</li>
+      <li>Aguarde a confirmação. A primeira instalação precisa de internet para baixar e verificar o núcleo de rede. Python já está incluído.</li>
+      <li>Abra o Discord pelo atalho habitual, entre em uma chamada e assista a uma transmissão. O túnel começa a ser preparado em segundo plano ao abrir o Discord.</li>
+    </ol>
+    <p>O executável ainda não tem assinatura Authenticode e o Windows pode mostrar um aviso de reputação. Confira a origem oficial do download e, se necessário, os hashes em <code>SHA256SUMS.txt</code>. Não é necessário desativar o antivírus ou o firewall.</p>
+    <p>O instalador e o aplicativo Proton podem ficar fechados depois da instalação. Use o programa com o mesmo usuário do Windows que utiliza o Discord.</p>
+  </section>
+  <section id="linux">
+    <h2>3. Instalar no Linux</h2>
+    <p>Use o Discord nativo e o Vencord. É necessário Python 3.10 ou superior.</p>
+    <ol>
+      <li>Extraia <code>DiscordStreamTunnel-VERSÃO-linux.tar.gz</code> pelo gerenciador de arquivos e abra um terminal na pasta extraída.</li>
+      <li>Encerre completamente o Discord e execute, com seu usuário normal:</li>
+    </ol>
+    <pre><code>sh instalar.sh</code></pre>
+    <p>Escolha <strong>Instalar / reaplicar</strong> e informe o caminho do seu <code>.conf</code>. Depois abra o Discord pelo atalho normal.</p>
+    <p>Se faltar Python, instale pelo gerenciador da distribuição:</p>
+    <pre><code># Ubuntu / Debian
+sudo apt install python3 ca-certificates
+# Arch / CachyOS
+sudo pacman -S --needed python ca-certificates</code></pre>
+    <p>A interface gráfica é opcional. Instale <code>python3-tk</code> (Ubuntu) ou <code>tk</code> (Arch/CachyOS) e, na pasta extraída, execute <code>python3 source/app.py --gui</code>.</p>
+    <p>Não execute <code>instalar.sh</code> com <code>sudo</code>. As bibliotecas do projeto já acompanham o pacote.</p>
+  </section>
+  <section id="problemas">
+    <h2>4. Verificar instalação e resolver problemas</h2>
+    <h3>“Vencord não encontrado” ou a integração parou após uma atualização</h3>
+    <p>Confirme que o Vencord está instalado no Discord usado. Feche o Discord, abra o instalador e use <strong>Reparar</strong>. Se a instalação estiver incompleta, selecione novamente o <code>.conf</code> e use <strong>Instalar / reaplicar</strong>.</p>
+    <h3>Tela preta, carregamento prolongado ou erro ao assistir</h3>
+    <ol>
+      <li>Confirme que sua internet e o Discord estão funcionando e que o remetente continua transmitindo.</li>
+      <li>Mantenha o Discord aberto durante a reprodução do problema. No instalador, clique em <strong>Verificar</strong> logo após a falha.</li>
+      <li>Envie ao suporte somente o arquivo <strong><code>diagnostico.json</code></strong> indicado no resultado. Informe o sistema, a versão do Discord/Vencord, o horário aproximado, o código do erro e se o problema afeta uma ou todas as transmissões.</li>
+      <li>Se o túnel não alcançar a Proton, teste uma configuração WireGuard de outro servidor disponível na sua conta. Feche o Discord antes de reaplicar a configuração.</li>
+    </ol>
+    <p>O diagnóstico diferencia abertura do controle, tráfego UDP e descoberta inicial. Ele não contém o <code>.conf</code>, tokens, chaves ou conteúdo de mídia. Um status antigo indica que o auxiliar pode já ter encerrado; reproduza a falha com o Discord aberto.</p>
+    <p>No Linux, também é possível gerar o relatório pelo terminal:</p>
+    <pre><code>python3 ~/.local/share/discord-stream-tunnel/launcher.py diagnose</code></pre>
+    <p>Se você configurou <code>XDG_DATA_HOME</code>, ajuste o caminho para essa pasta. No Windows, o relatório normalmente fica em <code>%LOCALAPPDATA%\DiscordStreamTunnel\data\diagnostico.json</code>.</p>
+    <p>O túnel permanece preparado enquanto o Discord está aberto e usa verificações espaçadas. Isso mantém um pequeno consumo de memória e rede em segundo plano. Falhas da operadora, Proton ou Discord ainda podem exigir recuperação; não existe garantia de conexão sem interrupções.</p>
+  </section>
+  <section id="remover">
+    <h2>5. Atualizar ou remover</h2>
+    <p>Atualizações da integração são verificadas automaticamente. Quando aparecer o aviso no Discord, <strong>Reiniciar e aplicar</strong> encerra a chamada atual; você também pode adiar até a próxima abertura completa.</p>
+    <p>Para remover, encerre o Discord e clique em <strong>Desinstalar</strong>. No Linux:</p>
+    <pre><code>python3 ~/.local/share/discord-stream-tunnel/launcher.py uninstall</code></pre>
+    <p>Abra o Discord uma vez para restaurar a preferência anterior de vídeo. Seu <code>.conf</code> original permanece na pasta em que você o salvou.</p>
+  </section>
+  <footer><p class="muted">Projeto independente de Discord, Vencord, Proton e sing-box. Detalhes técnicos e licenças acompanham o pacote em <code>README.md</code>, <code>SECURITY.md</code> e <code>LICENSE.txt</code>.</p></footer>
+</main></body>
+</html>

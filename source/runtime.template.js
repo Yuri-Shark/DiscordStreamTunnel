@@ -130,9 +130,12 @@
         const socket = root._socket, record = wrapped.get(socket);
         if (automatic && record && !record.ready && !record.starting && Date.now()>=record.retryAt) {
           record.starting = true;
-          Promise.resolve(window.DiscordProtonStreamsNative.ensureHelper()).then(() => {
+          let startup;
+          try { startup = window.DiscordProtonStreamsNative.ensureHelper(); }
+          catch (error) { startup = Promise.reject(error); }
+          Promise.resolve(startup).then(() => {
             record.ready = true; record.starting = false;record.retries=0;record.retryAt=0;lastError=null;
-            if(record.pendingFactory){const pending=record.pendingFactory;record.pendingFactory=null;if(enabled&&automatic&&wrapped.get(socket)===record&&root._socket===socket)record.open.apply(pending.self,pending.args);}
+            if(record.pendingFactory){const pending=record.pendingFactory;record.pendingFactory=null;if(enabled&&automatic&&wrapped.get(socket)===record&&root._socket===socket){try{record.open.apply(pending.self,pending.args);}catch(error){lastError=error?.name??'SocketFactoryError';}}}
             if (enabled && automatic) scan();
           }).catch(() => {record.starting = false;lastError='HelperUnavailable';record.retryAt=Date.now()+Math.min(5000,250*2**record.retries++);if(enabled&&automatic)setTimeout(scan,Math.max(0,record.retryAt-Date.now()));});
         }

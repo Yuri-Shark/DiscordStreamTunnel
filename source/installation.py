@@ -203,9 +203,11 @@ def launchers(remove=False):
     applications.mkdir(parents=True,exist_ok=True);target.write_text(content);target.chmod(0o644)
 
 def status(preload_override=None):
+    from diagnostics import runtime_snapshot
     preload=target_preload(preload_override)
     return {'version':VERSION,'vencordFound':preload.exists(),'integrationInstalled':preload.exists() and START in preload.read_bytes(),
-        'configurationPresent':(BASE/'private-core.json').exists(),'corePresent':CORE.exists(),'dataDirectory':str(BASE)}
+        'configurationPresent':(BASE/'private-core.json').exists(),'corePresent':CORE.exists(),'dataDirectory':str(BASE),
+        'runtime':runtime_snapshot(BASE)}
 
 def uninstall(preload_override=None):
     if preload_override is None:launchers(True)

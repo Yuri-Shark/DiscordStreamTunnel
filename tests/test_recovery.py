@@ -61,7 +61,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_healthy_existing_stream_is_not_interrupted(self):
         relay=self.make_relay();session=StreamSession('wss://test.discord.media/?v=9')
-        session.connected=True;relay.sessions['a'*32]=session
+        session.connected=True;session.media=SimpleNamespace(first_down_at=0,close=AsyncMock());relay.sessions['a'*32]=session
         for now in (0,6,12):
             self.clock[0]=now;self.assertFalse(await relay.recover_tunnel(0))
         relay.check_tunnel.assert_not_awaited();self.assertEqual(relay.core.restarts,0)
@@ -71,7 +71,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         relay=self.make_relay();await relay.recover_tunnel(0);self.clock[0]=6
         session=StreamSession('wss://test.discord.media/?v=9');relay.sessions['a'*32]=session
         async def recovered_stream():
-            session.connected=True;raise TimeoutError()
+            session.connected=True;session.connected_at=self.clock[0];raise TimeoutError()
         relay.check_tunnel=AsyncMock(side_effect=recovered_stream)
         self.assertFalse(await relay.recover_tunnel(0))
         self.assertEqual(relay.core.restarts,0)

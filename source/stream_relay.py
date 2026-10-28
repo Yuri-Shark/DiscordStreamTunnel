@@ -3,7 +3,7 @@
 Never changes system routes/DNS. Never logs payloads, tokens or media keys.
 """
 import asyncio
-from contextlib import suppress
+from contextlib import AsyncExitStack,suppress
 import hmac
 import ipaddress
 import json
@@ -29,6 +29,7 @@ VERSION=json.loads((Path(__file__).resolve().parent/'version.json').read_text())
 SID=re.compile(r'[a-f0-9]{32}\Z')
 class MissingConfiguration(Exception): pass
 class TunnelRestarted(ConnectionError): pass
+class MediaStartupTimeout(ConnectionError): pass
 
 def valid_target(target):
     try:
@@ -89,7 +90,9 @@ class Core:
     async def _ensure(self):
         if self.running:
             try:await self.probe();return
-            except (OSError,TimeoutError,asyncio.TimeoutError):await self._stop()
+            # A slow local SOCKS accept must not silently replace a core whose
+            # UDP associations may still be serving other streams.
+            except (OSError,TimeoutError,asyncio.TimeoutError):raise ConnectionError('CoreProxyUnavailable') from None
         config=self.base/'private-core.json'
         if not config.exists(): raise MissingConfiguration()
         environment={**os.environ,'GOMAXPROCS':'2','GOMEMLIMIT':'128MiB'}
@@ -122,6 +125,8 @@ class LocalDatagrams(asyncio.DatagramProtocol):
         if addr[0]!='127.0.0.1' or len(data)>65507: return
         if b.peer is None: b.peer=addr
         if addr!=b.peer: return
+        if len(data)==74 and data[:4]==b'\x00\x01\x00\x46' and b.discovery_packet is None:
+            b.discovery_packet=data;b.discovery_started=time.monotonic();b.discovery_pending.set()
         try: b.queue.put_nowait(data)
         except asyncio.QueueFull: b.stats['udpQueueDrops']+=1
 
@@ -129,15 +134,20 @@ class MediaBridge:
     def __init__(self,socks,target,stats):
         self.socks,self.target,self.stats=socks,target,stats
         self.transport=None;self.peer=None;self.tasks=[];self.queue=asyncio.Queue(maxsize=512)
+        self.first_up_at=None;self.first_down_at=None
+        self.discovery_packet=None;self.discovery_started=None;self.discovery_ms=None
+        self.discovery_pending=asyncio.Event();self.discovery_done=asyncio.Event()
+        self.startup_timeout=8
     @classmethod
     async def create(cls,settings,target,stats):
         socks=await asyncio.wait_for(SocksUDP.create(settings['socksPort'],'discord-stream',settings['nonce']),5)
         socks.protocol.stats=stats
         bridge=cls(socks,target,stats)
+        bridge.startup_timeout=settings.get('mediaStartupSeconds',8)
         try:
             await asyncio.get_running_loop().create_datagram_endpoint(lambda:LocalDatagrams(bridge),local_addr=('127.0.0.1',0))
             bridge.tasks=[asyncio.create_task(bridge.outbound()),asyncio.create_task(bridge.inbound()),
-                          asyncio.create_task(socks.watch_control())]
+                          asyncio.create_task(socks.watch_control()),asyncio.create_task(bridge.discover())]
             return bridge
         except BaseException:
             await socks.close();raise
@@ -147,7 +157,28 @@ class MediaBridge:
         while True:
             data=await self.queue.get()
             await self.socks.send(self.target,data)
+            if self.first_up_at is None:self.first_up_at=time.monotonic()
             self.stats['udpUpBytes']+=len(data);self.stats['udpUpPackets']+=1
+    async def discover(self):
+        # Only repeat Discord's unencrypted, idempotent IP discovery query.
+        # Never replay encrypted media, DAVE frames or control messages.
+        await self.discovery_pending.wait()
+        for delay in (.25,.5,1):
+            remaining=self.startup_timeout-(time.monotonic()-self.discovery_started)
+            if remaining<=0:break
+            try:await asyncio.wait_for(self.discovery_done.wait(),min(delay,remaining))
+            except asyncio.TimeoutError:pass
+            else:break
+            if time.monotonic()-self.discovery_started>=self.startup_timeout:break
+            await self.socks.send(self.target,self.discovery_packet)
+            self.stats['udpDiscoveryRetries']=self.stats.get('udpDiscoveryRetries',0)+1
+            self.stats['udpUpBytes']+=len(self.discovery_packet);self.stats['udpUpPackets']+=1
+        remaining=max(0,self.startup_timeout-(time.monotonic()-self.discovery_started))
+        try:await asyncio.wait_for(self.discovery_done.wait(),remaining)
+        except asyncio.TimeoutError:raise MediaStartupTimeout('UDPDiscoveryTimeout') from None
+        # Successful setup isn't a terminated transport task. Stay dormant;
+        # silence in paused video must never trigger a reconnect.
+        await asyncio.Future()
     async def inbound(self):
         while True:
             try: target,data=await self.socks.receive()
@@ -156,6 +187,10 @@ class MediaBridge:
                 continue
             if target!=self.target or self.peer is None: continue
             self.transport.sendto(data,self.peer)
+            if self.first_down_at is None:self.first_down_at=time.monotonic()
+            if (self.discovery_packet is not None and len(data)==74 and data[:4]==b'\x00\x02\x00\x46'
+                    and data[4:8]==self.discovery_packet[4:8] and not self.discovery_done.is_set()):
+                self.discovery_ms=round((time.monotonic()-self.discovery_started)*1000);self.discovery_done.set()
             self.stats['udpDownBytes']+=len(data);self.stats['udpDownPackets']+=1
             self.stats['lastUdpDownAt']=time.time()
     async def close(self):
@@ -167,6 +202,7 @@ class MediaBridge:
 class StreamSession:
     def __init__(self,target):
         self.target=target;self.media=None;self.media_target=None;self.active=False;self.connected=False;self.closed_at=time.monotonic()
+        self.connected_at=None;self.control_ms=None;self.failure_handled=False
 
 class Relay:
     def __init__(self,settings,core=None,connector=connect,media_factory=MediaBridge.create,owner_pid=None,clock=None):
@@ -174,14 +210,16 @@ class Relay:
         self.sessions={};self.stopping=False
         self.stats={'openedControls':0,'activeControls':0,'controlUpBytes':0,'controlDownBytes':0,
             'udpUpBytes':0,'udpDownBytes':0,'udpUpPackets':0,'udpDownPackets':0,'udpQueueDrops':0,
-            'udpReceiveQueueDrops':0,'udpMalformedPackets':0,'mediaResets':0,'coreRestarts':0,'lastUdpDownAt':None,'lastErrorClass':None}
+            'udpReceiveQueueDrops':0,'udpMalformedPackets':0,'udpDiscoveryRetries':0,'controlRetries':0,
+            'mediaStartupTimeouts':0,'mediaResets':0,'coreRestarts':0,'lastUdpDownAt':None,'lastErrorClass':None}
         self.events=[]
         self.last_control=time.monotonic()
-        self.warm_lock=asyncio.Lock();self.warmed_at=0;self.warmup_ms=None
+        self.warm_lock=asyncio.Lock();self.warmed_at=None;self.warmup_ms=None
         self.owner_pid=owner_pid;self.generation=0;self.recovery_lock=asyncio.Lock()
         self.clock=clock or time.monotonic
         self.last_recovery_probe=None;self.last_restart=None;self.failed_probes=0
         self.tunnel_reachable=None;self.tunnel_checked_at=None
+        self.pending_recovery=None
     def note(self,event,**details):
         self.events.append({'at':time.time(),'event':event,**details})
         del self.events[:-64]
@@ -192,28 +230,62 @@ class Relay:
             dns=config['dns']['servers'][0]['server'];transaction=secrets.token_bytes(2)
             query=transaction+b'\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00'+b'\x07discord\x03com\x00\x00\x01\x00\x01'
             socks=await asyncio.wait_for(SocksUDP.create(self.settings['socksPort'],'discord-stream',self.settings['nonce']),3)
-            await socks.send((dns,53),query)
-            source,response=await asyncio.wait_for(socks.receive(),4)
-            if source!=(dns,53) or response[:2]!=transaction or len(response)<12 or not response[2]&128:raise ValueError('UnexpectedDNSReply')
+            for attempt in range(2):
+                await socks.send((dns,53),query)
+                deadline=time.monotonic()+2
+                while time.monotonic()<deadline:
+                    try:source,response=await asyncio.wait_for(socks.receive(),max(.001,deadline-time.monotonic()))
+                    except ValueError:continue
+                    except asyncio.TimeoutError:break
+                    if source==(dns,53) and response[:2]==transaction and len(response)>=12 and response[2]&128:return
+            raise TimeoutError('TunnelDNSProbeTimeout')
         finally:
             if socks:await socks.close()
     async def verify_tunnel(self):
+        generation=self.generation
         try:await asyncio.wait_for(self.check_tunnel(),8)
         except Exception:
-            self.tunnel_reachable=False;self.tunnel_checked_at=time.time();raise
-        self.tunnel_reachable=True;self.tunnel_checked_at=time.time()
+            if generation==self.generation:self.tunnel_reachable=False;self.tunnel_checked_at=time.time()
+            raise
+        if generation==self.generation:self.tunnel_reachable=True;self.tunnel_checked_at=time.time()
     async def warm(self):
         async with self.warm_lock:
-            if self.core.running and time.monotonic()-self.warmed_at<30:return
+            if self.core.running and self.warmed_at is not None and time.monotonic()-self.warmed_at<30:return
+            async with self.recovery_lock:
+                if self.stopping:return
+                generation=self.generation
+            # A background DNS timeout must not hold up a stream handshake.
             started=time.monotonic();await self.verify_tunnel()
+            if generation!=self.generation or self.stopping:return
             self.warmed_at=time.monotonic();self.warmup_ms=round((self.warmed_at-started)*1000)
+            self.failed_probes=0;self.note('warmup-ok',elapsedMs=self.warmup_ms)
+    async def preheat(self):
+        failures=0
+        while not self.stopping:
+            generation=self.generation
+            try:await self.warm()
+            except Exception as error:
+                failures+=1;self.note('warmup-failed',errorClass=type(error).__name__)
+                try:await self.recover_tunnel(generation)
+                except Exception as recovery_error:self.note('recovery-error',errorClass=type(recovery_error).__name__)
+            else:failures=0
+            if self.stopping:return
+            await asyncio.sleep(min(60,5*2**min(failures-1,4)) if failures else 30)
+    def healthy_streams(self):
+        for session in self.sessions.values():
+            if not session.connected:continue
+            # Give controls time to negotiate media. After that, a control
+            # alone is insufficient evidence of a working UDP path.
+            if session.connected_at is not None and self.clock()-session.connected_at<15:return True
+            if session.media is not None and getattr(session.media,'first_down_at',None) is not None:return True
+        return False
     async def recover_tunnel(self,generation):
         async with self.recovery_lock:
             now=self.clock()
             if self.stopping:return False
             if generation!=self.generation:return True
             # A failing stream must never restart a tunnel used by healthy ones.
-            if any(session.connected for session in self.sessions.values()):return False
+            if self.healthy_streams():return False
             if self.last_recovery_probe is not None and now-self.last_recovery_probe<5:return False
             self.last_recovery_probe=now
             try:await self.verify_tunnel()
@@ -222,8 +294,8 @@ class Relay:
             else:
                 self.failed_probes=0;self.note('tunnel-probe-ok');return False
             if self.failed_probes<2 or (self.last_restart is not None and self.clock()-self.last_restart<30):return False
-            if any(session.connected for session in self.sessions.values()):return False
-            self.last_restart=self.clock();self.generation+=1;self.failed_probes=0;self.warmed_at=0
+            if self.healthy_streams():return False
+            self.last_restart=self.clock();self.generation+=1;self.failed_probes=0;self.warmed_at=None
             self.stats['lastUdpDownAt']=None;self.tunnel_reachable=False;self.tunnel_checked_at=time.time()
             self.stats['coreRestarts']+=1;self.note('core-restart')
             # All bridges belong to the previous SOCKS process and cannot resume.
@@ -234,15 +306,34 @@ class Relay:
             try:await asyncio.wait_for(self.core.restart(),10)
             except Exception as error:self.note('core-restart-failed',errorClass=type(error).__name__)
             return True
+    def request_recovery(self):
+        if self.stopping or self.pending_recovery is not None and not self.pending_recovery.done():return
+        generation=self.generation
+        async def run():
+            try:await self.recover_tunnel(generation)
+            except Exception as error:self.note('recovery-error',errorClass=type(error).__name__)
+        self.pending_recovery=asyncio.create_task(run())
     def health(self):
         recent_media=self.stats['lastUdpDownAt'] is not None and time.time()-self.stats['lastUdpDownAt']<30
         reachable=True if recent_media else self.tunnel_reachable if self.tunnel_checked_at is not None and time.time()-self.tunnel_checked_at<60 else None
         return {'service':'DiscordStreamTunnel','protocolVersion':1,'pid':os.getpid(),'ownerPID':self.owner_pid,'configurationReady':(BASE/'private-core.json').exists(),'coreRunning':self.core.running,
-            'version':VERSION,'buildRevision':'recovery-20261022','warmupMs':self.warmup_ms,
+            'version':VERSION,'buildRevision':'startup-20261028','warmupMs':self.warmup_ms,
+            'keepWarm':bool(self.owner_pid),'lastWarmupAgeSeconds':None if self.warmed_at is None else round(time.monotonic()-self.warmed_at,1),
             'stopping':self.stopping,'coreGeneration':self.generation,
             'tunnelReachable':reachable,'lastTunnelCheckAt':self.tunnel_checked_at,
             'activeControls':self.stats['activeControls'],'mediaBridges':sum(x.media is not None for x in self.sessions.values()),
             'scope':'Discord screen-stream sessions only; no system routes or DNS'}
+    def stream_diagnostics(self):
+        # No URLs, session IDs, tokens, payloads, addresses or media keys.
+        result=[]
+        for session in self.sessions.values():
+            media=session.media
+            result.append({'active':session.active,'controlConnected':session.connected,'controlConnectMs':session.control_ms,
+                'mediaAllocated':media is not None,'localPeerSeen':media is not None and getattr(media,'peer',None) is not None,
+                'udpSent':media is not None and getattr(media,'first_up_at',None) is not None,
+                'udpReceived':media is not None and getattr(media,'first_down_at',None) is not None,
+                'discoveryMs':getattr(media,'discovery_ms',None)})
+        return result
     async def validate(self,connection,request):
         if request.headers.get('Origin')!='https://discord.com': return connection.respond(403,'Forbidden')
         u=urlsplit(request.path);q=parse_qs(u.query,keep_blank_values=True)
@@ -259,7 +350,12 @@ class Relay:
         except PermissionError: return connection.respond(401,'Unauthorized')
         except ValueError: return connection.respond(400,'Invalid request')
         if self.stats['activeControls']>=4 or (sid in self.sessions and self.sessions[sid].active): return connection.respond(409,'Receiver limit')
-        if sid not in self.sessions and len(self.sessions)>=8: return connection.respond(503,'Session limit')
+        if sid not in self.sessions and len(self.sessions)>=8:
+            inactive=[(key,value) for key,value in self.sessions.items() if not value.active]
+            if not inactive:return connection.respond(503,'Session limit')
+            oldest,previous=min(inactive,key=lambda item:item[1].closed_at)
+            self.sessions.pop(oldest)
+            if previous.media:await previous.media.close()
     async def pump_up(self,client,upstream):
         async for frame in client:
             await upstream.send(frame)
@@ -289,28 +385,55 @@ class Relay:
                 frame=json.dumps(message,separators=(',',':'))
             await client.send(frame)
             self.stats['controlDownBytes']+=len(frame.encode() if isinstance(frame,str) else frame)
+    async def open_control(self,target,client,stack):
+        # Retry only the handshake, before forwarding any application frame.
+        # Once connected, Discord owns Identify/Resume and all heartbeat state.
+        closed=asyncio.create_task(client.wait_closed())
+        deadline=self.clock()+15
+        try:
+            for attempt in range(2):
+                proxy=f"socks5h://discord-stream:{quote(self.settings['nonce'],safe='')}@127.0.0.1:{self.settings['socksPort']}"
+                opening=asyncio.create_task(stack.enter_async_context(self.connector(target,proxy=proxy,origin='https://discord.com',
+                    compression=None,ping_interval=None,open_timeout=max(.001,deadline-self.clock()),close_timeout=2,max_size=1048576,max_queue=16)))
+                try:
+                    done,_=await asyncio.wait((opening,closed),return_when=asyncio.FIRST_COMPLETED)
+                    if closed in done:return None
+                    return opening.result()
+                except (ProxyError,TimeoutError,asyncio.TimeoutError,OSError) as error:
+                    if attempt or deadline-self.clock()<=.25:raise
+                    self.stats['controlRetries']+=1;self.note('control-retry',errorClass=type(error).__name__)
+                    try:await asyncio.wait_for(asyncio.shield(closed),.25)
+                    except asyncio.TimeoutError:pass
+                    else:return None
+                finally:
+                    if not opening.done():opening.cancel()
+                    await asyncio.gather(opening,return_exceptions=True)
+        finally:
+            closed.cancel();await asyncio.gather(closed,return_exceptions=True)
     async def handle(self,client):
         target,sid=request_details(client.request.path,self.settings['nonce'])
         session=self.sessions.setdefault(sid,StreamSession(target))
         if session.target!=target:
             if session.media: await session.media.close()
             session=StreamSession(target);self.sessions[sid]=session
-        if session.active: await client.close(1013);return
+        if session.active or self.stats['activeControls']>=4: await client.close(1013);return
         session.active=True;self.stats['activeControls']+=1
-        session.client=client
+        session.client=client;session.failure_handled=False;session.connected_at=None;session.control_ms=None
+        started=self.clock()
         generation=self.generation
         try:
             # No new control may attach to a core halfway through recovery.
             async with self.recovery_lock:
                 if self.stopping:raise ConnectionError('RelayStopping')
                 await self.core.ensure();generation=self.generation
-            proxy=f"socks5h://discord-stream:{quote(self.settings['nonce'],safe='')}@127.0.0.1:{self.settings['socksPort']}"
-            async with self.connector(target,proxy=proxy,origin='https://discord.com',compression=None,ping_interval=None,open_timeout=15,close_timeout=2,max_size=1048576,max_queue=16) as upstream:
+            async with AsyncExitStack() as stack:
+                upstream=await self.open_control(target,client,stack)
+                if upstream is None:return
                 if generation!=self.generation:raise TunnelRestarted()
-                session.connected=True;self.failed_probes=0
+                session.connected=True;session.connected_at=self.clock();session.control_ms=round((self.clock()-started)*1000)
                 self.tunnel_reachable=True;self.tunnel_checked_at=time.time()
                 self.stats['openedControls']+=1;self.stats['lastErrorClass']=None
-                self.note('control-open')
+                self.note('control-open',elapsedMs=session.control_ms)
                 tasks=[asyncio.create_task(self.pump_up(client,upstream)),asyncio.create_task(self.pump_down(upstream,client,session))]
                 try:
                     done,_=await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
@@ -346,23 +469,36 @@ class Relay:
             now=time.monotonic()
             for sid,session in list(self.sessions.items()):
                 if session.active and session.media and any(task.done() for task in session.media.tasks):
-                    self.stats['lastErrorClass']='MediaTransportClosed'
-                    self.note('media-transport-closed')
+                    if session.failure_handled:continue
+                    session.failure_handled=True
+                    errors=[task.exception() for task in session.media.tasks if task.done() and not task.cancelled()]
+                    startup=any(isinstance(error,MediaStartupTimeout) for error in errors)
+                    self.stats['lastErrorClass']='MediaStartupTimeout' if startup else 'MediaTransportClosed'
+                    if startup:self.stats['mediaStartupTimeouts']+=1
+                    self.note('media-startup-timeout' if startup else 'media-transport-closed')
+                    previous=session.media;session.media=None;session.media_target=None
+                    session.connected=False
+                    await previous.close()
+                    if startup:self.request_recovery()
                     # A broken association cannot be resumed. Ask for fresh
                     # identification / READY rather than reusing dead media.
                     with suppress(Exception):await session.client.close(4006)
                 if not session.active and now-session.closed_at>self.settings['idleSeconds']:
                     if session.media: await session.media.close()
                     self.sessions.pop(sid,None)
-            if not self.sessions and not self.stats['activeControls'] and now-self.last_control>self.settings.get('warmIdleSeconds',120):
+            if not self.owner_pid and not self.sessions and not self.stats['activeControls'] and now-self.last_control>self.settings.get('warmIdleSeconds',120):
                 await self.core.stop()
-            record={'pid':os.getpid(),'corePID':self.core.process.pid if self.core.running else None,'updatedAt':time.time(),**self.health(),**self.stats,'recentEvents':self.events}
+            record={'pid':os.getpid(),'corePID':self.core.process.pid if self.core.running else None,'updatedAt':time.time(),
+                **self.health(),**self.stats,'streams':self.stream_diagnostics(),'recentEvents':self.events}
             try:
                 temp=BASE/'status.tmp';temp.write_text(json.dumps(record,indent=2),encoding='utf-8');temp.replace(BASE/'status.json')
             except OSError as error:self.note('status-write-error',errorClass=type(error).__name__)
             await asyncio.sleep(2)
     async def close(self):
         self.stopping=True
+        if self.pending_recovery:
+            self.pending_recovery.cancel();await asyncio.gather(self.pending_recovery,return_exceptions=True)
+            self.pending_recovery=None
         await self.core.stop()
         for session in list(self.sessions.values()):
             if session.media: await session.media.close()
@@ -420,13 +556,17 @@ async def main(owner_pid=None,idle_exit=False):
     try:
         async with serve(relay.handle,'127.0.0.1',settings['relayPort'],process_request=relay.validate,origins=['https://discord.com'],compression=None,ping_interval=None,max_size=1048576,max_queue=16):
             task=asyncio.create_task(relay.maintain())
+            warmer=asyncio.create_task(relay.preheat()) if owner_pid else None
             try:
                 while not stop.is_set() and owner.alive() and not task.done():
-                    if idle_exit and not relay.sessions and not relay.stats['activeControls'] and time.monotonic()-relay.last_control>settings.get('warmIdleSeconds',120)+4: break
+                    if idle_exit and not owner_pid and not relay.sessions and not relay.stats['activeControls'] and time.monotonic()-relay.last_control>settings.get('warmIdleSeconds',120)+4: break
                     await asyncio.sleep(2)
                 if task.done(): task.result()
             finally:
-                task.cancel();await asyncio.gather(task,return_exceptions=True)
+                relay.stopping=True
+                background=[task]+([warmer] if warmer else [])
+                for running in background:running.cancel()
+                await asyncio.gather(*background,return_exceptions=True)
                 # Release the old core before waiting for pending upstream
                 # handshakes while a new Discord instance is starting.
                 await relay.close()

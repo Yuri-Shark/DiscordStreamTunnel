@@ -8,7 +8,7 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from configuration import ROOT
+from configuration import ROOT,BASE
 from installation import InstallError, VERSION, install, repair, status, target_preload, uninstall
 
 BG = '#1e272e'
@@ -279,6 +279,9 @@ class InstallerWindow:
                     result = status()
                 else:
                     result = status()
+                    from diagnostics import save_report
+                    try:result['diagnosticsFile'] = save_report(BASE,result)
+                    except OSError:result['diagnosticsError'] = True
                 self.events.put(('done',(kind,result)))
             except InstallError as error:
                 self.events.put(('error',str(error)))
@@ -340,6 +343,11 @@ class InstallerWindow:
                 text = ' · '.join([('Vencord encontrado' if result['vencordFound'] else 'Vencord ausente'),
                                    ('Integração instalada' if result['integrationInstalled'] else 'Integração ausente'),
                                    ('Configuração presente' if result['configurationPresent'] else 'Configuração ausente')])
+                runtime=result.get('runtime',{})
+                text += '\n'+('Auxiliar sem status recente.' if not runtime.get('available') or runtime.get('stale') else
+                    'Túnel verificado.' if runtime.get('tunnelReachable') is True else 'Conectividade do túnel ainda não confirmada.')
+                if result.get('diagnosticsFile'):text += '\nDiagnóstico para suporte: '+result['diagnosticsFile']
+                elif result.get('diagnosticsError'):text += '\nNão foi possível gravar o diagnóstico. Confira as permissões e tente Verificar novamente.'
             self.result_title.set(title)
             self.result_label.configure(fg='#80dfad')
             self.message.set(text)

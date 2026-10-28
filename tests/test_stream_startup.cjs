@@ -50,8 +50,47 @@ async function firstConnection(sender) {
   assert.equal(listeners.size, 0);
 }
 
+async function failureRecovery() {
+  const calls=[],timers=[],listeners=new Set();let now=0,starts=0,failFactory=true;
+  class NativeSocket {constructor(url){this.url=url;calls.push(url);}}
+  const ctx=vm.createContext({WebSocket:NativeSocket,URL,URLSearchParams,Proxy,Reflect,crypto,
+    Date:{now:()=>now},setTimeout:fn=>timers.push(fn),DiscordProtonStreamsNative:{ensureHelper(){
+      if(++starts===1)throw Error('SynchronousHelperFailure');return Promise.resolve();
+    }}});ctx.window=ctx;
+  const control={url:'wss://test-sfu.discord.media:8443/',createWebSocket(){
+    if(failFactory)throw TypeError('SyntheticFactoryError');this.webSocket=new ctx.WebSocket(this.url+'?v=10');
+  }};
+  const root={context:'stream',state:'CONNECTING',_socket:control,isStreamSender:()=>false};
+  ctx.Vencord={Webpack:{findStore:()=>({getRTCConnections:()=>({root}),addChangeListener:fn=>listeners.add(fn),removeChangeListener:fn=>listeners.delete(fn)})}};
+  vm.runInContext(source,ctx);ctx.__discordProtonStreams.automatico(true);control.createWebSocket();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(starts,1);assert.equal(ctx.__discordProtonStreams.status().lastError,'HelperUnavailable');
+  now=1000;while(timers.length)timers.shift()();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(starts,2);assert.equal(ctx.__discordProtonStreams.status().lastError,'TypeError');
+  assert.equal(timers.length,0,'a factory exception must not create an endless helper retry loop');
+  failFactory=false;control.createWebSocket();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(starts,3);assert.equal(calls.length,1);
+  ctx.__discordProtonStreams.remover();
+}
+
+async function removedWhileStarting() {
+  const calls=[],listeners=new Set();let release;
+  class NativeSocket {constructor(url){calls.push(url);}}
+  const ctx=vm.createContext({WebSocket:NativeSocket,URL,URLSearchParams,Proxy,Reflect,crypto,setTimeout,
+    DiscordProtonStreamsNative:{ensureHelper:()=>new Promise(resolve=>{release=resolve;})}});ctx.window=ctx;
+  const root={context:'stream',state:'CONNECTING',isStreamSender:()=>false,_socket:{url:'wss://test-sfu.discord.media/',
+    createWebSocket(){return new ctx.WebSocket(this.url+'?v=10');}}};
+  ctx.Vencord={Webpack:{findStore:()=>({getRTCConnections:()=>({root}),addChangeListener:fn=>listeners.add(fn),removeChangeListener:fn=>listeners.delete(fn)})}};
+  vm.runInContext(source,ctx);ctx.__discordProtonStreams.automatico(true);root._socket.createWebSocket();
+  ctx.__discordProtonStreams.remover();release();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(calls.length,0,'unloading while starting must not open an orphan stream');assert.equal(listeners.size,0);
+}
+
 (async () => {
   await firstConnection(true);
   await firstConnection(false);
+  await failureRecovery();
+  await removedWhileStarting();
   console.log('OK: sender/receiver startup and reconnections revalidate the helper; voice and cleanup preserved.');
 })().catch(error => {console.error(error); process.exitCode = 1;});

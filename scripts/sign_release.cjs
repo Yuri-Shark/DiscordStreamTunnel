@@ -33,7 +33,7 @@ function main(){
  const updater=require('../source/update.cjs');updater.unpack(payload,updater.verify(manifests.canonical,trust.publicKey));
  fs.writeFileSync(path.join(root,'release','update-manifest-v2.json'),JSON.stringify(manifests.canonical,null,2));
  fs.writeFileSync(path.join(root,'release','update-manifest.json'),JSON.stringify(manifests.compatibility,null,2));
- const names=['DiscordStreamTunnel-'+version+'-Windows-x64.zip','DiscordStreamTunnel-'+version+'-linux.tar.gz','runtime-bundle.json.gz','update-manifest.json','update-manifest-v2.json'];
+ const names=['DiscordStreamTunnel-'+version+'-Windows-x64.zip','DiscordStreamTunnel-'+version+'-linux.tar.gz','LEIA-ME-PRIMEIRO.html','runtime-bundle.json.gz','update-manifest.json','update-manifest-v2.json'];
  fs.writeFileSync(path.join(root,'release','SHA256SUMS.txt'),names.map(name=>crypto.createHash('sha256').update(fs.readFileSync(path.join(root,'release',name))).digest('hex')+'  '+name).join('\n')+'\n');
  console.log('Canonical and compatibility manifests signed and verified with the existing publisher key.');
 }

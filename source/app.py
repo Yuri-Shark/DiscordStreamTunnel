@@ -24,6 +24,7 @@ def main():
     install=sub.add_parser('install');install.add_argument('--config');install.add_argument('--headless',action='store_true');install.add_argument('--preload');install.add_argument('--core-archive');install.add_argument('--payload-dir')
     remove=sub.add_parser('uninstall');remove.add_argument('--headless',action='store_true');remove.add_argument('--preload')
     check=sub.add_parser('status');check.add_argument('--preload')
+    sub.add_parser('diagnose')
     relay=sub.add_parser('worker');relay.add_argument('--owner-pid',type=int);relay.add_argument('--idle-exit',action='store_true')
     launch=sub.add_parser('launch');launch.add_argument('arguments',nargs=argparse.REMAINDER)
     args=parser.parse_args()
@@ -55,7 +56,11 @@ def main():
         if args.command is None:return 0
         if args.command=='install':args.config=input('Caminho do arquivo Proton .conf: ').strip().strip('"').strip("'")
     try:
-        if args.command=='status':result=status(args.preload)
+        if args.command=='diagnose':
+            from configuration import BASE
+            from diagnostics import save_report
+            result={'diagnosticsFile':save_report(BASE,status())}
+        elif args.command=='status':result=status(args.preload)
         elif args.command=='uninstall':result=uninstall(args.preload)
         else:
             if not args.config:raise InstallError('Escolha o arquivo .conf da sua conta Proton.')
