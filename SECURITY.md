@@ -81,7 +81,12 @@ e publique ambos os manifestos usando a chave Ed25519 existente.
 
 Não há telemetria do projeto. A instalação baixa o núcleo oficial do GitHub,
 e os atualizadores consultam releases públicas. O túnel usa a configuração
-Proton escolhida pelo usuário para as conexões de mídia do Discord.
+Proton escolhida pelo usuário para o controle Gateway e as conexões de mídia
+de compartilhamento do Discord. O Gateway inclui eventos de mensagens, presença
+e chamadas; o auxiliar encaminha seus frames sem interpretar ou guardar o
+conteúdo. A voz principal e HTTP/CDN continuam diretos. O serviço local exige
+a origem do Discord e autorização privada, e restringe hosts, portas, parâmetros
+e conexões simultâneas; não altera as rotas ou o DNS do sistema.
 Configurações e diagnósticos locais ficam na pasta privada da instalação;
 chaves e conteúdo de transmissões não entram em logs públicos.
 

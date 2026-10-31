@@ -8,12 +8,13 @@ import time
 NUMBERS={'updatedAt','warmupMs','lastWarmupAgeSeconds','coreGeneration','activeControls','mediaBridges',
     'openedControls','controlUpBytes','controlDownBytes','udpUpBytes','udpDownBytes','udpUpPackets','udpDownPackets',
     'udpQueueDrops','udpReceiveQueueDrops','udpMalformedPackets','udpDiscoveryRetries','controlRetries',
-    'mediaStartupTimeouts','mediaResets','coreRestarts','lastUdpDownAt','lastTunnelCheckAt'}
+    'mediaStartupTimeouts','mediaResets','coreRestarts','lastUdpDownAt','lastTunnelCheckAt',
+    'activeGatewayControls','openedGatewayControls','gatewayConnectMs','gatewayUpBytes','gatewayDownBytes','gatewayRetries'}
 FLAGS={'configurationReady','coreRunning','stopping','keepWarm','tunnelReachable'}
 STREAM_FLAGS={'active','controlConnected','mediaAllocated','localPeerSeen','udpSent','udpReceived'}
 EVENTS={'warmup-ok','warmup-failed','tunnel-probe-failed','tunnel-probe-ok','core-restart','core-restart-failed',
     'media-reset','control-open','control-close','control-error','control-retry','media-startup-timeout',
-    'media-transport-closed','recovery-error','status-write-error'}
+    'media-transport-closed','recovery-error','status-write-error','gateway-open','gateway-close','gateway-error','gateway-retry'}
 
 
 def number(value):

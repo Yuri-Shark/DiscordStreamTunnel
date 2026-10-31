@@ -1,7 +1,7 @@
 # DiscordStreamTunnel
 
-Integração para encaminhar as sessões de compartilhamento de tela do Discord
-por um túnel Proton WireGuard em userspace. A voz principal da chamada e os
+Integração para encaminhar o controle Gateway e as sessões de compartilhamento
+de tela do Discord por um túnel Proton WireGuard em userspace. A voz principal e os
 demais aplicativos continuam pela conexão normal.
 
 O addon deve se limitar ao tunelamento em segundo plano. Os atalhos devem
@@ -40,8 +40,8 @@ existente sem pedir novamente o `.conf`.
 Flatpak e Snap não são cobertos.
 
 ```sh
-tar -xzf DiscordStreamTunnel-1.4.0-linux.tar.gz
-cd DiscordStreamTunnel-1.4.0-linux
+tar -xzf DiscordStreamTunnel-1.5.0-linux.tar.gz
+cd DiscordStreamTunnel-1.5.0-linux
 sh instalar.sh
 ```
 
@@ -52,6 +52,27 @@ com seu usuário normal. Instale Vencord pelas [instruções oficiais](https://v
 No Linux, a interface gráfica é opcional: instale `python3-tk` (Ubuntu) ou
 `tk` (CachyOS/Arch) e execute `python3 source/app.py --gui` dentro da pasta
 extraída. A instalação por terminal continua funcionando sem Tk.
+
+## O que mudou na 1.5.0
+
+- O Gateway principal também passa pelo túnel. É nele que o Discord recebe o
+  endereço do servidor da transmissão, antes de abrir a mídia. Na análise ao
+  vivo, a espera ocorria nessa etapa, enquanto o auxiliar já estava preparado.
+- A rota permanece estável enquanto o Discord está aberto. Alternar a rota
+  durante a chamada pode invalidar a sessão e encerrar o compartilhamento.
+  A inicialização aguarda o auxiliar e migra uma conexão antecipada uma vez.
+- **Escopo de rede:** eventos de mensagens, presença e chamadas que circulam
+  no Gateway também usam o Proton. A voz principal, HTTP/CDN, os demais
+  aplicativos e as rotas/DNS do sistema continuam com seu comportamento normal.
+  Não é uma VPN global. Conteúdo do Gateway não é interpretado nem registrado
+  pelo auxiliar; autenticação e retomada continuam sob controle do Discord.
+- O diagnóstico separa os tempos e contadores do Gateway dos da mídia.
+  Testes verificam frames binários/comprimidos sem alteração ou repetição,
+  destinos autorizados, limites, fechamentos e preservação da voz.
+
+A 1.4.0 já reconhece a chave desta atualização. Instalações anteriores à
+1.4.0 ainda precisam de **Reparar** com o pacote novo uma vez. Medições de
+conexão não garantem o tempo do primeiro quadro para todos os participantes.
 
 ## O que mudou na 1.4.0
 
@@ -287,6 +308,7 @@ público não contêm configurações de conta, tokens, cookies ou chaves privad
 ```sh
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=source:source/vendor python3 -m unittest discover -s tests -p 'test_*.py' -v
 node tests/test_runtime.cjs
+node tests/test_gateway.cjs
 node tests/test_stream_startup.cjs
 node tests/test_native.cjs
 node tests/test_helper_recovery.cjs

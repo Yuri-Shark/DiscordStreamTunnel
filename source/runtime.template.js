@@ -52,6 +52,60 @@
     else videoGuard = 'unavailable';
   }
   const base = `ws://127.0.0.1:${config.relayPort}/relay`;
+  const gatewayBase = `ws://127.0.0.1:${config.relayPort}/gateway`;
+  let gatewayStore = null, gatewayStarting = false, gatewayTimer = null, gatewayAttempts = 0;
+  let gatewayOriginal = null, gatewayReplacement = null;
+  const gateway = {constructions:0, migrations:0, lastError:null};
+  function gatewayAllowed(target) {
+    try {
+      const u = new URL(target), q = u.searchParams;
+      return u.protocol === 'wss:' && /^gateway(?:-[a-z0-9]+)*\.discord\.gg$/.test(u.hostname)
+        && ['', '443'].includes(u.port) && ['', '/'].includes(u.pathname) && !u.username && !u.password && !u.hash
+        && ['9','10'].includes(q.get('v')) && ['etf','json'].includes(q.get('encoding'))
+        && (!q.has('compress') || ['zlib-stream','zstd-stream'].includes(q.get('compress')))
+        && [...q.keys()].every(k => ['v','encoding','compress'].includes(k) && q.getAll(k).length === 1);
+    } catch { return false; }
+  }
+  function gatewayStatus() {
+    let socket; try { socket = gatewayStore?.getSocket()?.webSocket; } catch {}
+    return {...gateway, throughRelay:!!socket?.url?.startsWith(gatewayBase+'?'), connected:socket?.readyState === 1};
+  }
+  function startGateway() {
+    if (!enabled || !automatic || gatewayStarting || typeof window.DiscordProtonStreamsNative?.ensureHelper !== 'function') return;
+    gatewayStore ||= findStore('GatewayConnectionStore', value => value && typeof value.getSocket === 'function');
+    const retry = () => { if (enabled && automatic && ++gatewayAttempts < 60) {gatewayTimer = setTimeout(startGateway,1000);gatewayTimer?.unref?.();} };
+    if (!gatewayStore) { if(W.cache || W.fluxStores)retry();return; }
+    gatewayStarting = true;
+    Promise.resolve().then(() => window.DiscordProtonStreamsNative.ensureHelper()).then(() => {
+      if (!enabled || !automatic) return;
+      if (!gatewayReplacement) {
+        gatewayOriginal = window.WebSocket;
+        gatewayReplacement = new Proxy(gatewayOriginal, {
+          construct(Target, args) {
+            const target = String(args[0]);
+            if (enabled && automatic && gatewayAllowed(target)) {
+              // Revalidate/relaunch a lost helper without changing the native
+              // socket API. Discord retains responsibility for Resume/backoff.
+              Promise.resolve().then(() => window.DiscordProtonStreamsNative.ensureHelper()).catch(() => {gateway.lastError='HelperUnavailable';});
+              args = [gatewayBase+'?'+new URLSearchParams({nonce:config.nonce,target}), ...args.slice(1)];
+              gateway.constructions++;
+            }
+            return Reflect.construct(Target,args,Target);
+          }
+        });
+        window.WebSocket = gatewayReplacement;
+      }
+      const control = gatewayStore.getSocket(), socket = control?.webSocket;
+      if (socket?.url?.startsWith(gatewayBase+'?')) return;
+      // Fast-connect may expose no usable socket until after helper startup.
+      if (!socket || !gatewayAllowed(socket.url) || socket.readyState >= 2) {retry();return;}
+      // Discord can adopt a fast-connect socket created before the addon.
+      // Migrate that one socket once; never alternate routes within a session.
+      if (socket.readyState === 1 && control.isSessionEstablished?.()) {
+        gateway.migrations++;socket.close(4000);gateway.lastError=null;
+      } else retry();
+    }).catch(() => {gateway.lastError='HelperUnavailable';retry();}).finally(() => {gatewayStarting=false;});
+  }
   const portAllowed = new Set(['', '443', '2053', '2083', '2087', '2096', '8443']);
   function allowed(target) {
     try {
@@ -159,8 +213,9 @@
   function status() {
     const roots = Object.values(store.getRTCConnections()).filter(x => x.context === 'stream');
     return {enabled, automatic, constructions, wrappedSockets: wrapped.size, lastError, videoGuard,
+      gateway:gatewayStatus(),
       streams: roots.map(x => ({state: x.state, sender: x.isStreamSender(), throughRelay: !!x._socket?.webSocket?.url?.startsWith(base)})),
-      scope: 'Somente sessoes de compartilhamento de tela; voz principal e demais aplicativos permanecem diretos.'};
+      scope: 'Controle Gateway e compartilhamento de tela pelo tunel; audio principal e demais aplicativos permanecem diretos.'};
   }
   function testReceivers() {
     scan();
@@ -176,6 +231,8 @@
   }
   function remove(options = {}) {
     enabled = false; automatic = false; store.removeChangeListener(scan);
+    if (gatewayTimer !== null) window.clearTimeout?.(gatewayTimer);
+    if (gatewayReplacement && window.WebSocket === gatewayReplacement) window.WebSocket = gatewayOriginal;
     for (const [socket, record] of wrapped) if (socket.createWebSocket === record.replacement) socket.createWebSocket = record.original;
     for (const [root, record] of watchedRoots) unwatchRoot(root, record);
     wrapped.clear(); delete window[key];
@@ -185,6 +242,6 @@
     return {removed: true};
   }
   store.addChangeListener(scan);
-  window[key] = {status, testarRecepcaoAtual: testReceivers, automatico(value = true) {automatic = !!value; scan(); return status();}, remover: remove};
+  window[key] = {status, testarRecepcaoAtual: testReceivers, automatico(value = true) {automatic = !!value; if(automatic)startGateway();scan(); return status();}, remover: remove};
   applyVideoGuard(); scan(); return status();
 })()

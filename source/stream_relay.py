@@ -25,6 +25,7 @@ from configuration import BASE,CORE,local_settings
 from socks_udp import SocksUDP
 
 HOST=re.compile(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.discord\.media\Z')
+GATEWAY_HOST=re.compile(r'gateway(?:-[a-z0-9]+)*\.discord\.gg\Z')
 VERSION=json.loads((Path(__file__).resolve().parent/'version.json').read_text())['version']
 SID=re.compile(r'[a-f0-9]{32}\Z')
 class MissingConfiguration(Exception): pass
@@ -45,6 +46,26 @@ def request_details(path,nonce):
     if not hmac.compare_digest(q['nonce'][0],nonce): raise PermissionError('Invalid local authorization')
     if not valid_target(q['target'][0]) or not SID.fullmatch(q['sid'][0]): raise ValueError('Invalid target or local session')
     return q['target'][0],q['sid'][0]
+
+
+def valid_gateway_target(target):
+    try:
+        if not isinstance(target,str) or len(target)>2048 or any(ord(c)<=32 for c in target):return False
+        u=urlsplit(target);q=parse_qs(u.query,keep_blank_values=True,strict_parsing=True)
+        return (u.scheme=='wss' and bool(GATEWAY_HOST.fullmatch(u.hostname or '')) and u.port in (None,443)
+            and u.path in ('','/') and not u.username and not u.password and not u.fragment
+            and {'v','encoding'}<=set(q)<={'v','encoding','compress'} and all(len(v)==1 for v in q.values())
+            and q['v'][0] in ('9','10') and q['encoding'][0] in ('json','etf')
+            and ('compress' not in q or q['compress'][0] in ('zlib-stream','zstd-stream')))
+    except (ValueError,TypeError):return False
+
+
+def gateway_details(path,nonce):
+    u=urlsplit(path);q=parse_qs(u.query,keep_blank_values=True)
+    if u.path!='/gateway' or set(q)!={'nonce','target'} or any(len(v)!=1 for v in q.values()):raise ValueError('Invalid gateway request')
+    if not hmac.compare_digest(q['nonce'][0],nonce):raise PermissionError('Invalid local authorization')
+    if not valid_gateway_target(q['target'][0]):raise ValueError('Invalid gateway target')
+    return q['target'][0]
 
 def media_target(body):
     if not isinstance(body,dict): raise ValueError('Invalid media endpoint')
@@ -208,10 +229,13 @@ class Relay:
     def __init__(self,settings,core=None,connector=connect,media_factory=MediaBridge.create,owner_pid=None,clock=None):
         self.settings=settings;self.core=core or Core(settings);self.connector=connector;self.media_factory=media_factory
         self.sessions={};self.stopping=False
+        self.gateway_clients=set()
         self.stats={'openedControls':0,'activeControls':0,'controlUpBytes':0,'controlDownBytes':0,
             'udpUpBytes':0,'udpDownBytes':0,'udpUpPackets':0,'udpDownPackets':0,'udpQueueDrops':0,
             'udpReceiveQueueDrops':0,'udpMalformedPackets':0,'udpDiscoveryRetries':0,'controlRetries':0,
             'mediaStartupTimeouts':0,'mediaResets':0,'coreRestarts':0,'lastUdpDownAt':None,'lastErrorClass':None}
+        self.stats.update(activeGatewayControls=0,openedGatewayControls=0,gatewayConnectMs=None,
+            gatewayUpBytes=0,gatewayDownBytes=0,gatewayRetries=0)
         self.events=[]
         self.last_control=time.monotonic()
         self.warm_lock=asyncio.Lock();self.warmed_at=None;self.warmup_ms=None
@@ -323,12 +347,12 @@ class Relay:
         recent_media=self.stats['lastUdpDownAt'] is not None and time.time()-self.stats['lastUdpDownAt']<30
         reachable=True if recent_media else self.tunnel_reachable if self.tunnel_checked_at is not None and time.time()-self.tunnel_checked_at<60 else None
         return {'service':'DiscordStreamTunnel','protocolVersion':1,'pid':os.getpid(),'ownerPID':self.owner_pid,'configurationReady':(BASE/'private-core.json').exists(),'coreRunning':self.core.running,
-            'version':VERSION,'buildRevision':'startup-20261031','warmupMs':self.warmup_ms,
+            'version':VERSION,'buildRevision':'gateway-20261031','warmupMs':self.warmup_ms,
             'keepWarm':bool(self.owner_pid),'lastWarmupAgeSeconds':None if self.warmed_at is None else round(time.monotonic()-self.warmed_at,1),
             'stopping':self.stopping,'coreGeneration':self.generation,
             'tunnelReachable':reachable,'lastTunnelCheckAt':self.tunnel_checked_at,
             'activeControls':self.stats['activeControls'],'mediaBridges':sum(x.media is not None for x in self.sessions.values()),
-            'scope':'Discord screen-stream sessions only; no system routes or DNS'}
+            'scope':'Discord Gateway control and screen-stream media; main voice stays direct; no system routes or DNS'}
     def stream_diagnostics(self):
         # No URLs, session IDs, tokens, payloads, addresses or media keys.
         result=[]
@@ -352,6 +376,12 @@ class Relay:
             response.headers['Access-Control-Allow-Origin']='https://discord.com'
             response.headers['Content-Type']='application/json'
             return response
+        if u.path=='/gateway':
+            try:gateway_details(request.path,self.settings['nonce'])
+            except PermissionError:return connection.respond(401,'Unauthorized')
+            except ValueError:return connection.respond(400,'Invalid request')
+            if len(self.gateway_clients)>=2:return connection.respond(409,'Gateway limit')
+            return
         try: target,sid=request_details(request.path,self.settings['nonce'])
         except PermissionError: return connection.respond(401,'Unauthorized')
         except ValueError: return connection.respond(400,'Invalid request')
@@ -364,8 +394,11 @@ class Relay:
             if previous.media:await previous.media.close()
     async def pump_up(self,client,upstream):
         async for frame in client:
+            size=len(frame.encode() if isinstance(frame,str) else frame)
+            if size>1048576:
+                await client.close(1009);return
             await upstream.send(frame)
-            self.stats['controlUpBytes']+=len(frame.encode() if isinstance(frame,str) else frame)
+            self.stats['controlUpBytes']+=size
     async def pump_down(self,upstream,client,session):
         async for frame in upstream:
             # A fresh READY invalidates old media even in v10, where the new
@@ -391,7 +424,7 @@ class Relay:
                 frame=json.dumps(message,separators=(',',':'))
             await client.send(frame)
             self.stats['controlDownBytes']+=len(frame.encode() if isinstance(frame,str) else frame)
-    async def open_control(self,target,client,stack):
+    async def open_control(self,target,client,stack,gateway=False):
         # Retry only the handshake, before forwarding any application frame.
         # Once connected, Discord owns Identify/Resume and all heartbeat state.
         closed=asyncio.create_task(client.wait_closed())
@@ -400,14 +433,16 @@ class Relay:
             for attempt in range(2):
                 proxy=f"socks5h://discord-stream:{quote(self.settings['nonce'],safe='')}@127.0.0.1:{self.settings['socksPort']}"
                 opening=asyncio.create_task(stack.enter_async_context(self.connector(target,proxy=proxy,origin='https://discord.com',
-                    compression=None,ping_interval=None,open_timeout=max(.001,deadline-self.clock()),close_timeout=2,max_size=1048576,max_queue=16)))
+                    compression=None,ping_interval=None,open_timeout=max(.001,deadline-self.clock()),close_timeout=2,
+                    max_size=8*1024*1024 if gateway else 1048576,max_queue=4 if gateway else 16)))
                 try:
                     done,_=await asyncio.wait((opening,closed),return_when=asyncio.FIRST_COMPLETED)
                     if closed in done:return None
                     return opening.result()
                 except (ProxyError,TimeoutError,asyncio.TimeoutError,OSError) as error:
                     if attempt or deadline-self.clock()<=.25:raise
-                    self.stats['controlRetries']+=1;self.note('control-retry',errorClass=type(error).__name__)
+                    self.stats['gatewayRetries' if gateway else 'controlRetries']+=1
+                    self.note('gateway-retry' if gateway else 'control-retry',errorClass=type(error).__name__)
                     try:await asyncio.wait_for(asyncio.shield(closed),.25)
                     except asyncio.TimeoutError:pass
                     else:return None
@@ -417,6 +452,8 @@ class Relay:
         finally:
             closed.cancel();await asyncio.gather(closed,return_exceptions=True)
     async def handle(self,client):
+        if urlsplit(client.request.path).path=='/gateway':
+            await self.handle_gateway(client);return
         target,sid=request_details(client.request.path,self.settings['nonce'])
         session=self.sessions.setdefault(sid,StreamSession(target))
         if session.target!=target:
@@ -473,6 +510,62 @@ class Relay:
         finally:
             session.active=False;session.connected=False;session.closed_at=time.monotonic()
             self.stats['activeControls']-=1;self.last_control=time.monotonic()
+
+    async def handle_gateway(self,client):
+        target=gateway_details(client.request.path,self.settings['nonce'])
+        if len(self.gateway_clients)>=2:await client.close(1013);return
+        self.gateway_clients.add(client);self.stats['activeGatewayControls']+=1
+        started=self.clock();generation=self.generation
+        async def pump(source,destination,counter):
+            # The Discord client owns Identify, Resume, compression and ETF.
+            # Forward each frame once, without parsing or retaining its payload.
+            try:
+                async for frame in source:
+                    await destination.send(frame)
+                    self.stats[counter]+=len(frame.encode() if isinstance(frame,str) else frame)
+            except ConnectionClosed as error:
+                code=error.rcvd.code if error.rcvd else 4000
+                code=code if code in (1000,1001) or 3000<=code<=4999 else 4000
+                # Propagate before the upstream context exits. Its default 1000
+                # close would invalidate a Discord session that asked to Resume.
+                await asyncio.gather(source.close(code),destination.close(code),return_exceptions=True)
+                raise
+            else:
+                code=getattr(source,'close_code',None) or 1000
+                await destination.close(code if code in (1000,1001) or 3000<=code<=4999 else 4000)
+        try:
+            async with self.recovery_lock:
+                if self.stopping:raise ConnectionError('RelayStopping')
+                await self.core.ensure();generation=self.generation
+            async with AsyncExitStack() as stack:
+                upstream=await self.open_control(target,client,stack,gateway=True)
+                if upstream is None:return
+                if generation!=self.generation:raise TunnelRestarted()
+                self.stats['openedGatewayControls']+=1
+                self.stats['gatewayConnectMs']=round((self.clock()-started)*1000)
+                self.note('gateway-open',elapsedMs=self.stats['gatewayConnectMs'])
+                tasks=[asyncio.create_task(pump(client,upstream,'gatewayUpBytes')),
+                    asyncio.create_task(pump(upstream,client,'gatewayDownBytes'))]
+                try:
+                    done,_=await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
+                    for task in done:task.result()
+                    if tasks[1] in done:
+                        code=getattr(upstream,'close_code',None) or 1000
+                        await client.close(code if code in (1000,1001) or 3000<=code<=4999 else 4000)
+                        self.note('gateway-close',code=code)
+                finally:
+                    for task in tasks:task.cancel()
+                    await asyncio.gather(*tasks,return_exceptions=True)
+        except ConnectionClosed as error:
+            code=error.rcvd.code if error.rcvd else 4000
+            with suppress(Exception):await client.close(code if code in (1000,1001) or 3000<=code<=4999 else 4000)
+        except Exception as error:
+            self.note('gateway-error',errorClass=type(error).__name__)
+            if isinstance(error,(ProxyError,TimeoutError,asyncio.TimeoutError,OSError)):self.request_recovery()
+            with suppress(Exception):await client.close(4000)
+        finally:
+            self.gateway_clients.discard(client);self.stats['activeGatewayControls']-=1
+            self.last_control=time.monotonic()
     async def maintain(self):
         while not self.stopping:
             now=time.monotonic()
@@ -495,7 +588,7 @@ class Relay:
                 if not session.active and now-session.closed_at>self.settings['idleSeconds']:
                     if session.media: await session.media.close()
                     self.sessions.pop(sid,None)
-            if not self.owner_pid and not self.sessions and not self.stats['activeControls'] and now-self.last_control>self.settings.get('warmIdleSeconds',120):
+            if not self.owner_pid and not self.sessions and not self.stats['activeControls'] and not self.gateway_clients and now-self.last_control>self.settings.get('warmIdleSeconds',120):
                 await self.core.stop()
             record={'pid':os.getpid(),'corePID':self.core.process.pid if self.core.running else None,'updatedAt':time.time(),
                 **self.health(),**self.stats,'streams':self.stream_diagnostics(),'recentEvents':self.events}
@@ -508,6 +601,8 @@ class Relay:
         if self.pending_recovery:
             self.pending_recovery.cancel();await asyncio.gather(self.pending_recovery,return_exceptions=True)
             self.pending_recovery=None
+        if self.gateway_clients:
+            await asyncio.gather(*(client.close(4000) for client in list(self.gateway_clients)),return_exceptions=True)
         await self.core.stop()
         for session in list(self.sessions.values()):
             if session.media: await session.media.close()
@@ -563,12 +658,12 @@ async def main(owner_pid=None,idle_exit=False):
             asyncio.get_running_loop().add_signal_handler(signum,stop.set);signals.append(signum)
     logging.getLogger('websockets').disabled=True
     try:
-        async with serve(relay.handle,'127.0.0.1',settings['relayPort'],process_request=relay.validate,origins=['https://discord.com'],compression=None,ping_interval=None,max_size=1048576,max_queue=16):
+        async with serve(relay.handle,'127.0.0.1',settings['relayPort'],process_request=relay.validate,origins=['https://discord.com'],compression=None,ping_interval=None,max_size=8*1024*1024,max_queue=4):
             task=asyncio.create_task(relay.maintain())
             warmer=asyncio.create_task(relay.preheat()) if owner_pid else None
             try:
                 while not stop.is_set() and owner.alive() and not task.done():
-                    if idle_exit and not owner_pid and not relay.sessions and not relay.stats['activeControls'] and time.monotonic()-relay.last_control>settings.get('warmIdleSeconds',120)+4: break
+                    if idle_exit and not owner_pid and not relay.sessions and not relay.stats['activeControls'] and not relay.gateway_clients and time.monotonic()-relay.last_control>settings.get('warmIdleSeconds',120)+4: break
                     await asyncio.sleep(2)
                 if task.done(): task.result()
             finally:

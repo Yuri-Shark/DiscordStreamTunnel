@@ -1,4 +1,71 @@
-# Análise de conexão e recuperação — 1.4.0
+# Análise de conexão e recuperação — 1.5.0
+
+## Diagnóstico ao vivo posterior — 1.5.0
+
+A 1.4.0 não resolveu a espera observada nesta máquina. Com diagnóstico local
+restrito ao loopback, o auxiliar já estava aquecido em cerca de 141 ms, mas o
+Discord permanecia em `AWAITING_ENDPOINT`. O evento `STREAM_CREATE` chegava;
+`STREAM_SERVER_UPDATE`, que entrega o endereço de mídia, demorou cerca de
+149 segundos em uma tentativa. Depois de recebê-lo, a abertura do controle
+levou aproximadamente 954 ms e a descoberta UDP, 250 ms. A fila JavaScript
+dos eventos levou milissegundos. Isso localiza a espera anterior à mídia;
+reduzir apenas o aquecimento do auxiliar não basta para essa situação.
+
+A comparação usa sessões novas, a mesma fonte de captura e a região Brazil,
+com o mesmo processo Discord já aberto:
+
+| Rota | Endereço de mídia | Conexão de mídia |
+| --- | --- | --- |
+| Direta, primeira | Ausente após 20,35 s | Ausente após 20,35 s |
+| Proton, primeira | 1,263 s | 2,897 s |
+| Proton, segunda | 1,204 s | 2,815 s |
+| Direta, segunda | 0,716 s | 2,323 s |
+
+A rota direta também conectou rapidamente. A comparação é pequena e sequencial;
+não elimina aquecimento, cache ou variações do servidor. Os dados não demonstram
+que a rota direta sempre falha, nem que o túnel seja sempre mais rápido.
+
+Uma abertura nova da 1.4.0, reiniciando também o auxiliar, recebeu o endereço
+em 1,045 s e conectou em 3,431 s. Portanto, a hipótese de aquecimento não foi
+descartada e os resultados rápidos não são exclusivos da rota pelo Proton.
+
+Após corrigir a espera pelo socket inicial e reiniciar novamente o Discord,
+o Gateway migrou uma vez e permaneceu conectado pelo auxiliar. Nas aberturas
+manuais seguintes, foram observados eventos de endpoint em cerca de 525 ms
+para recepção e 534 ms para envio. Envio e recepções chegaram a `RTC_CONNECTED`;
+duas recepções sinalizaram entrega do primeiro quadro e os contadores dos vídeos
+avançaram. Não foi obtido um tempo preciso de primeiro quadro remoto enviado.
+Essas observações validam funcionamento nesta chamada, sem prometer a mesma
+latência em outras redes ou uma vantagem exclusiva sobre a rota direta.
+
+`RTC_CONNECTED` não comprova primeiro quadro remoto. A tentativa de medir o
+primeiro quadro da prévia por callback não retornou um tempo válido, portanto
+não foi substituída pelo tempo de conexão nos resultados. Contadores da prévia
+avançaram 36 quadros em cerca de 1,2 s numa consulta posterior; isso tampouco
+comprova que outro participante recebeu o vídeo.
+
+Alternar o Gateway de volta à rota direta invalidou a sessão em uma tentativa
+e encerrou o compartilhamento. A implementação mantém uma rota durante a
+execução do Discord, aguarda o auxiliar e migra apenas a conexão antecipada
+que o cliente já tenha aberto. Reconexão, autenticação, compressão, ETF e
+retomada continuam sob responsabilidade do Discord; o auxiliar apenas
+encaminha os frames uma vez, com fila limitada e contrapressão.
+Os códigos de fechamento são encaminhados nos dois sentidos antes de liberar
+a conexão: substituir um pedido de retomada 4000 por fechamento normal 1000
+pode invalidar a sessão no servidor. Um teste verifica esse caminho real.
+
+O escopo aumentou explicitamente: **o Gateway principal também usa o Proton**,
+incluindo seus eventos de mensagens, presença e chamadas. A voz principal,
+HTTP/CDN e os demais aplicativos continuam diretos. Rotas e DNS do sistema
+não são modificados. Hosts, portas e parâmetros do Gateway são restritos,
+a origem precisa ser a do Discord e cada conexão exige autorização local.
+Conteúdo, tokens e identificadores não entram no diagnóstico.
+
+Os testes novos verificam mensagens textuais e binárias acima de 1 MiB sem
+alteração ou repetição, fechamento do servidor, rejeição de destinos e origens,
+limite de duas conexões Gateway, isolamento dos contadores de mídia e espera
+pelo auxiliar. O controle de mídia mantém limite de 1 MiB. Contadores Gateway
+não comprovam tráfego UDP saudável e não impedem a recuperação da mídia.
 
 ## Revisão de 31/10/2026
 
@@ -53,8 +120,9 @@ do problema específico relatado pelo usuário que não conseguia assistir.
 ## Como a conexão funciona
 
 1. O preload inicia `native.cjs`, prepara o auxiliar e injeta o runtime no Discord.
-2. O runtime intercepta somente sockets com contexto `stream`. A voz principal
-   continua direta. Cada socket recebe uma identidade local para retomadas.
+2. O runtime intercepta o Gateway principal e sockets com contexto `stream`.
+   A voz principal continua direta. Cada socket de mídia recebe uma identidade
+   local para retomadas; o Gateway é encaminhado sem interpretar seu conteúdo.
 3. O auxiliar abre o controle WSS do servidor de mídia através do SOCKS local,
    com saída pelo WireGuard em userspace.
 4. Ao receber `READY` ou `SFU_UPDATE`, cria uma associação SOCKS UDP e substitui
