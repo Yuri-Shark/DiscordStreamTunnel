@@ -100,7 +100,7 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         try:
             async with serve(relay.handle,'127.0.0.1',0,compression=None) as server:
                 port=server.sockets[0].getsockname()[1]
-                for now,expected in ((0,1011),(6,4006)):
+                for now,expected in ((0,4006),(6,4006)):
                     self.clock[0]=now
                     url=f'ws://127.0.0.1:{port}/relay?'+urlencode({'nonce':'synthetic','target':'wss://test.discord.media/?v=9','sid':'a'*32})
                     async with connect(url,proxy=None) as client:

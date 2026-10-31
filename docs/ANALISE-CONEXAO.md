@@ -1,4 +1,47 @@
-# Análise de conexão e recuperação — 1.3.0
+# Análise de conexão e recuperação — 1.4.0
+
+## Revisão de 31/10/2026
+
+O usuário esclareceu que o vídeo aparece após uma espera, tanto no envio
+quanto na recepção. A instalação local usava 1.2.4 e Vencord 8d64c8b; a 1.3.0
+continuava como rascunho. O preload ainda continha o carregador. O auxiliar
+registrava tráfego UDP nos dois sentidos, sem perda nas filas no instante
+consultado. Tráfego UDP não comprova a entrega de quadros decodificados.
+
+Logs locais mostraram uma abertura do controle que fechou cerca de 10,8 s
+depois e voltou a negociar; uma tentativa posterior chegou ao estado conectado
+em cerca de 1,6 s. Os logs também registraram falhas na busca `connectStores`
+do Vencord. Esses dados descrevem a instalação anterior, sem medição comparável
+de primeiro quadro antes/depois. Nenhum token, endereço, chave ou identificador
+da chamada foi copiado para este documento.
+
+Foram corrigidos três bloqueios verificáveis: ApexExperimentStore usava a
+busca quebrada mesmo quando StreamRTCConnectionStore já tinha fallback;
+o bootstrap abandonava módulos demorados após 15 s; e a recuperação mantinha
+o bloqueio de abertura durante uma consulta de saúde de até oito segundos.
+Uma falha transitória agora fecha o controle afetado com 4006 e agenda a
+recuperação em segundo plano, permitindo uma negociação nova sem aguardar
+essa consulta. O reinício efetivo do núcleo continua exclusivo e mantém
+as proteções de sessões saudáveis, duas falhas e intervalo mínimo.
+
+Testes com eventos bloqueiam deliberadamente a consulta de recuperação:
+outra tela recebe sua resposta em menos de 0,5 s no teste local, enquanto
+a consulta continua pendente. Isso verifica ausência do bloqueio, e não
+uma promessa de latência em rede. Outros testes cobrem fechamento imediato,
+carregamento tardio de webpack/Apex, getters inválidos, preservação de voz,
+migração sem `.conf` e recebimento real de WM_DROPFILES pela janela Tk.
+
+A chave antiga não foi encontrada nos locais de publicação nem na lixeira.
+A nova chave foi protegida com DPAPI e enviada para um secret do GitHub;
+o manifesto novo é rejeitado corretamente pela chave antiga nos testes.
+Por isso a migração para 1.4.0 exige uma execução do pacote novo. Publicar uma
+release não permite modificar o código de avisos já instalado em outros PCs.
+
+O auxiliar local já era filho do renderer do Discord e o núcleo era filho do
+auxiliar. A criação Windows agora usa `detached: false`. Essa relação não
+elimina os processos nem garante o agrupamento visual do Gerenciador de Tarefas.
+
+## Revisão anterior, incorporada nesta release
 
 Revisão de 28/10/2026. Escopo: bootstrap Electron/Vencord, interceptação das
 sessões de compartilhamento, auxiliar Python, SOCKS TCP/UDP, núcleo WireGuard,

@@ -216,6 +216,7 @@ class Relay:
         self.last_control=time.monotonic()
         self.warm_lock=asyncio.Lock();self.warmed_at=None;self.warmup_ms=None
         self.owner_pid=owner_pid;self.generation=0;self.recovery_lock=asyncio.Lock()
+        self.recovery_probe_lock=asyncio.Lock()
         self.clock=clock or time.monotonic
         self.last_recovery_probe=None;self.last_restart=None;self.failed_probes=0
         self.tunnel_reachable=None;self.tunnel_checked_at=None
@@ -280,7 +281,9 @@ class Relay:
             if session.media is not None and getattr(session.media,'first_down_at',None) is not None:return True
         return False
     async def recover_tunnel(self,generation):
-        async with self.recovery_lock:
+        # Serialize probes separately: an eight-second DNS timeout must not
+        # hold the lock needed by a healthy new screen's control connection.
+        async with self.recovery_probe_lock:
             now=self.clock()
             if self.stopping:return False
             if generation!=self.generation:return True
@@ -293,19 +296,22 @@ class Relay:
                 self.failed_probes+=1;self.note('tunnel-probe-failed',errorClass=type(error).__name__)
             else:
                 self.failed_probes=0;self.note('tunnel-probe-ok');return False
+            if generation!=self.generation:return True
             if self.failed_probes<2 or (self.last_restart is not None and self.clock()-self.last_restart<30):return False
-            if self.healthy_streams():return False
-            self.last_restart=self.clock();self.generation+=1;self.failed_probes=0;self.warmed_at=None
-            self.stats['lastUdpDownAt']=None;self.tunnel_reachable=False;self.tunnel_checked_at=time.time()
-            self.stats['coreRestarts']+=1;self.note('core-restart')
-            # All bridges belong to the previous SOCKS process and cannot resume.
-            for session in list(self.sessions.values()):
-                if session.media:
-                    previous=session.media;session.media=None;session.media_target=None
-                    await previous.close()
-            try:await asyncio.wait_for(self.core.restart(),10)
-            except Exception as error:self.note('core-restart-failed',errorClass=type(error).__name__)
-            return True
+            async with self.recovery_lock:
+                if self.stopping or self.healthy_streams():return False
+                if generation!=self.generation:return True
+                self.last_restart=self.clock();self.generation+=1;self.failed_probes=0;self.warmed_at=None
+                self.stats['lastUdpDownAt']=None;self.tunnel_reachable=False;self.tunnel_checked_at=time.time()
+                self.stats['coreRestarts']+=1;self.note('core-restart')
+                # All bridges belong to the previous SOCKS process and cannot resume.
+                for session in list(self.sessions.values()):
+                    if session.media:
+                        previous=session.media;session.media=None;session.media_target=None
+                        await previous.close()
+                try:await asyncio.wait_for(self.core.restart(),10)
+                except Exception as error:self.note('core-restart-failed',errorClass=type(error).__name__)
+                return True
     def request_recovery(self):
         if self.stopping or self.pending_recovery is not None and not self.pending_recovery.done():return
         generation=self.generation
@@ -317,7 +323,7 @@ class Relay:
         recent_media=self.stats['lastUdpDownAt'] is not None and time.time()-self.stats['lastUdpDownAt']<30
         reachable=True if recent_media else self.tunnel_reachable if self.tunnel_checked_at is not None and time.time()-self.tunnel_checked_at<60 else None
         return {'service':'DiscordStreamTunnel','protocolVersion':1,'pid':os.getpid(),'ownerPID':self.owner_pid,'configurationReady':(BASE/'private-core.json').exists(),'coreRunning':self.core.running,
-            'version':VERSION,'buildRevision':'startup-20261028','warmupMs':self.warmup_ms,
+            'version':VERSION,'buildRevision':'startup-20261031','warmupMs':self.warmup_ms,
             'keepWarm':bool(self.owner_pid),'lastWarmupAgeSeconds':None if self.warmed_at is None else round(time.monotonic()-self.warmed_at,1),
             'stopping':self.stopping,'coreGeneration':self.generation,
             'tunnelReachable':reachable,'lastTunnelCheckAt':self.tunnel_checked_at,
@@ -458,8 +464,11 @@ class Relay:
             self.note('control-error',errorClass=type(error).__name__)
             reset=generation!=self.generation
             if isinstance(error,(ProxyError,TimeoutError,asyncio.TimeoutError,OSError)):
-                try:reset=await self.recover_tunnel(generation) or reset
-                except Exception as recovery_error:self.note('recovery-error',errorClass=type(recovery_error).__name__)
+                # Release the failed screen immediately. A slow health probe
+                # used to extend black screens past Discord's HELLO deadline.
+                # Request fresh negotiation so a later core restart cannot
+                # leave the retry using an obsolete UDP association.
+                self.request_recovery();reset=True
             with suppress(Exception): await client.close(4006 if reset else 1011)
         finally:
             session.active=False;session.connected=False;session.closed_at=time.monotonic()

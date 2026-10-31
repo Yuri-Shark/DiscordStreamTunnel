@@ -8,6 +8,7 @@ release/
 *.spec
 *.conf
 *.pem
+*.dpapi
 private*
 local-settings.json
 runtime.expr.js

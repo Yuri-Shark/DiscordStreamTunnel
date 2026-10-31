@@ -1,13 +1,13 @@
 'use strict';
 const fs=require('fs'),path=require('path'),crypto=require('crypto');
 
-function createManifests({payload,version,repository,privateKey,compatEnvelope,installers}){
+function createManifests({payload,version,repository,privateKey,compatEnvelope,compatPublicKey,installers}){
  const publicKey=crypto.createPublicKey(privateKey);
  if(!/^\d+\.\d+\.\d+$/.test(version)||!/^[-\w]+\/DiscordStreamTunnel$/.test(repository))throw Error('InvalidRelease');
  // Derive the historical URL from a previously signed release, keeping previous
  // account names out of the current source and runtime. Preserve the signing key.
  const previousBytes=Buffer.from(compatEnvelope.signed,'base64');
- if(!crypto.verify(null,previousBytes,publicKey,Buffer.from(compatEnvelope.signature,'base64')))throw Error('InvalidCompatibilitySignature');
+ if(!crypto.verify(null,previousBytes,compatPublicKey||publicKey,Buffer.from(compatEnvelope.signature,'base64')))throw Error('InvalidCompatibilitySignature');
  const previous=JSON.parse(previousBytes),oldURL=new URL(previous.url);
  if(previous.schema!==1||!/^\d+\.\d+\.\d+$/.test(previous.version)||oldURL.origin!=='https://github.com'||oldURL.username||oldURL.password||oldURL.search||oldURL.hash||!/^\/[-\w]+\/DiscordStreamTunnel\/releases\/download\/v\d+\.\d+\.\d+\/runtime-bundle\.json\.gz$/.test(oldURL.pathname))throw Error('InvalidCompatibilityURL');
  const compatibilityRepository=oldURL.pathname.split('/').slice(1,3).join('/');
@@ -21,21 +21,26 @@ function createManifests({payload,version,repository,privateKey,compatEnvelope,i
 
 function main(){
  const privateKeyPath=process.argv[2],flag=process.argv.indexOf('--compat-manifest'),compatPath=flag>=0?process.argv[flag+1]:null;
+ const previousFlag=process.argv.indexOf('--previous-trust'),previousTrustPath=previousFlag>=0?process.argv[previousFlag+1]:null;
  if(!privateKeyPath||!compatPath)throw Error('Supply private signing key and --compat-manifest PATH to the previous signed update-manifest.json, both outside the repository');
  const root=path.resolve(__dirname,'..'),trust=JSON.parse(fs.readFileSync(path.join(root,'source','trust.json')));
  const version=JSON.parse(fs.readFileSync(path.join(root,'source','version.json'))).version;
  const payload=fs.readFileSync(path.join(root,'release','runtime-bundle.json.gz'));
- const privateKey=fs.readFileSync(privateKeyPath);
+ const privateKey=privateKeyPath==='--key-stdin'?fs.readFileSync(0):privateKeyPath==='--key-env'?process.env.DTS_RELEASE_PRIVATE_KEY:fs.readFileSync(privateKeyPath);
+ if(!privateKey)throw Error('MissingPublisherKey');
  if(crypto.createPublicKey(privateKey).export({type:'spki',format:'pem'})!==trust.publicKey)throw Error('PublisherKeyMismatch');
  const installerName='DiscordStreamTunnel-'+version+'-Windows-x64.zip',installer=fs.readFileSync(path.join(root,'release',installerName));
  const installers={win32:{url:'https://github.com/'+trust.repository+'/releases/download/v'+version+'/'+installerName,bytes:installer.length,sha256:crypto.createHash('sha256').update(installer).digest('hex')}};
- const manifests=createManifests({payload,version,repository:trust.repository,privateKey,compatEnvelope:JSON.parse(fs.readFileSync(compatPath)),installers});
+ // A lost-key recovery explicitly authenticates historical routing with its
+ // original public key. Old clients still require a one-time manual migration.
+ const compatPublicKey=previousTrustPath?JSON.parse(fs.readFileSync(previousTrustPath,'utf8')).publicKey:undefined;
+ const manifests=createManifests({payload,version,repository:trust.repository,privateKey,compatEnvelope:JSON.parse(fs.readFileSync(compatPath)),compatPublicKey,installers});
  const updater=require('../source/update.cjs');updater.unpack(payload,updater.verify(manifests.canonical,trust.publicKey));
  fs.writeFileSync(path.join(root,'release','update-manifest-v2.json'),JSON.stringify(manifests.canonical,null,2));
  fs.writeFileSync(path.join(root,'release','update-manifest.json'),JSON.stringify(manifests.compatibility,null,2));
  const names=['DiscordStreamTunnel-'+version+'-Windows-x64.zip','DiscordStreamTunnel-'+version+'-linux.tar.gz','LEIA-ME-PRIMEIRO.html','runtime-bundle.json.gz','update-manifest.json','update-manifest-v2.json'];
  fs.writeFileSync(path.join(root,'release','SHA256SUMS.txt'),names.map(name=>crypto.createHash('sha256').update(fs.readFileSync(path.join(root,'release',name))).digest('hex')+'  '+name).join('\n')+'\n');
- console.log('Canonical and compatibility manifests signed and verified with the existing publisher key.');
+ console.log('Canonical and compatibility manifests signed and verified'+(previousTrustPath?' (explicit publisher key recovery; manual migration required).':'.'));
 }
 if(require.main===module)main();
 module.exports={createManifests};

@@ -21,6 +21,12 @@ const withInstaller=createManifests({...options,installers});
 assert.deepEqual(updater.verify(withInstaller.canonical,keys.publicKey).installers,installers);
 assert.deepEqual(JSON.parse(Buffer.from(withInstaller.compatibility.signed,'base64')).installers,installers);
 assert.deepEqual(updater.unpack(payload,compatibility),updater.unpack(payload,canonical));
+const recoveryKeys=crypto.generateKeyPairSync('ed25519');
+const recoveryKey=recoveryKeys.privateKey.export({type:'pkcs8',format:'pem'});
+assert.throws(()=>createManifests({...options,privateKey:recoveryKey}),/CompatibilitySignature/);
+const recovered=createManifests({...options,privateKey:recoveryKey,compatPublicKey:keys.publicKey});
+assert.equal(updater.verify(recovered.canonical,recoveryKeys.publicKey).version,'1.1.3');
+assert.throws(()=>updater.verify(recovered.canonical,keys.publicKey),/InvalidSignature/,'lost-key recovery must never bypass the old client trust');
 assert.throws(()=>createManifests({...options,compatEnvelope:{...options.compatEnvelope,signed:Buffer.from(JSON.stringify({...previous,url:'https://github.com/attacker/DiscordStreamTunnel/releases/download/v1.1.2/runtime-bundle.json.gz'})).toString('base64')}}),/Signature/);
 for(const url of ['http://github.com/previous-owner/DiscordStreamTunnel/releases/download/v1.1.2/runtime-bundle.json.gz','https://github.com/previous-owner/OtherProject/releases/download/v1.1.2/runtime-bundle.json.gz','https://github.com/previous-owner/DiscordStreamTunnel/releases/download/v1.1.2/runtime-bundle.json.gz?redirect=evil']){
  assert.throws(()=>createManifests({...options,compatEnvelope:encode({...previous,url})}),/CompatibilityURL/);

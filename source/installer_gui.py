@@ -33,6 +33,8 @@ class InstallerWindow:
         self.buttons = {}
         self.update_dialog = None
         self.has_interacted = False
+        self.validation_attempted = False
+        self.preload = None
         self.file = tk.StringVar()
         self.message = tk.StringVar(value='Escolha sua configuração Proton para instalar. Se já instalou, você pode reparar a integração.')
         self.result_title = tk.StringVar(value='Pronto para começar')
@@ -100,6 +102,7 @@ class InstallerWindow:
 
         self.label(body, 'Instalação detectada', size=14).pack(anchor='w', pady=(0,10))
         detected = tk.Frame(body, bg=PANEL, highlightbackground=BORDER, highlightthickness=1, padx=16, pady=12)
+        self.detected = detected
         detected.pack(fill='x')
         line = tk.Frame(detected, bg=PANEL)
         line.pack(fill='x')
@@ -107,10 +110,13 @@ class InstallerWindow:
         self.dot.pack(side='left', padx=(0,9))
         self.label(line, 'Discord com Vencord', bg=PANEL, size=11).pack(side='left')
         self.label(line, variable=self.detection, color=MUTED, bg=PANEL, size=9).pack(side='right')
-        self.label(detected, str(target_preload().parent), color=MUTED, bg=PANEL, size=9).pack(anchor='w', pady=(5,0))
+        self.preload_path = tk.StringVar(value=str(target_preload().parent))
+        self.label(detected, variable=self.preload_path, color=MUTED, bg=PANEL, size=9).pack(anchor='w', pady=(5,0))
+        self.locate = self.button(detected, 'Localizar pasta do Vencord', self.choose_vencord, color=FIELD, small=True)
+        self.locate.pack(anchor='w', pady=(6,0))
 
         self.label(body, 'Configuração da sua conta Proton', size=14).pack(anchor='w', pady=(20,5))
-        self.label(body, 'Selecione o arquivo WireGuard .conf. O aplicativo Proton não precisa ficar aberto.', color=MUTED, size=9).pack(anchor='w', pady=(0,10))
+        self.label(body, 'Selecione ou arraste o arquivo WireGuard .conf para esta janela.', color=MUTED, size=9).pack(anchor='w', pady=(0,10))
         picker = tk.Frame(body, bg=BG)
         picker.pack(fill='x')
         self.entry = tk.Entry(picker, textvariable=self.file, bg=FIELD, fg=TEXT, insertbackground=TEXT,
@@ -120,6 +126,13 @@ class InstallerWindow:
         self.pick = self.button(picker, 'Escolher .conf', self.choose_file, color=FIELD)
         self.pick.pack(side='right', padx=(10,0))
         self.file.trace_add('write', lambda *_:self.refresh_controls())
+        self.drop = None
+        if os.name == 'nt':
+            try:
+                from windows_drop import FileDrop
+                self.drop = FileDrop(root, self.receive_drop)
+            except OSError:
+                pass  # The file picker remains usable if shell drops are unavailable.
         self.label(body, 'Feche o Discord antes de instalar, reparar ou remover.', color=MUTED, size=9).pack(anchor='w', pady=(9,15))
 
         actions = tk.Frame(body, bg=BG)
@@ -141,6 +154,7 @@ class InstallerWindow:
         self.bar.pack(fill='x')
         self.label(body, 'Depois da instalação, abra somente o Discord. O túnel inicia quando necessário.', color=MUTED, size=9).pack(anchor='w', pady=(12,0))
         root.protocol('WM_DELETE_WINDOW', self.close)
+        root.bind('<Destroy>', self.cleanup, add='+')
         root.after(80, self.initial_status)
         root.after(180, self.fit_window)
         if initial_action!='uninstall':root.after(250,self.start_update_check)
@@ -216,9 +230,32 @@ class InstallerWindow:
         if file:
             self.file.set(file)
 
+    def choose_vencord(self):
+        if self.busy:
+            return
+        self.has_interacted = True
+        folder = filedialog.askdirectory(parent=self.root, title='Escolher pasta do Vencord (ou dist)')
+        if folder:
+            base = Path(folder)
+            self.preload = str(base/'dist'/'preload.js' if (base/'dist'/'preload.js').is_file() else base/'preload.js')
+            self.preload_path.set(str(Path(self.preload).parent))
+            self.initial_status()
+
+    def receive_drop(self, paths):
+        if self.busy:
+            return
+        self.has_interacted = True
+        if len(paths) == 1 and Path(paths[0]).is_file() and Path(paths[0]).suffix.lower() == '.conf':
+            self.file.set(str(Path(paths[0])))
+            self.message.set('Configuração selecionada. Clique em Instalar / reaplicar para continuar.')
+        else:
+            self.validation_attempted = True
+            self.entry.configure(highlightbackground=RED, highlightcolor=RED)
+            self.message.set('Arraste somente um arquivo .conf válido para esta janela.')
+
     def initial_status(self):
         try:
-            self.update_status(status())
+            self.update_status(status(self.preload))
         except Exception:
             self.detection.set('Não foi possível verificar')
         self.refresh_controls()
@@ -241,21 +278,30 @@ class InstallerWindow:
         installed = self.current.get('integrationInstalled',False)
         for kind,button in self.buttons.items():
             available = not self.busy
-            if kind=='install':
-                available = available and found and bool(self.file.get().strip())
-            elif kind in ('repair','uninstall'):
+            if kind in ('repair','uninstall'):
                 available = available and installed
             button.configure(state='normal' if available else 'disabled')
         self.pick.configure(state='disabled' if self.busy else 'normal')
         self.entry.configure(state='disabled' if self.busy else 'normal')
+        self.locate.configure(state='disabled' if self.busy else 'normal')
+        selected = Path(self.file.get().strip())
+        valid_file = selected.is_file() and selected.suffix.lower() == '.conf'
+        self.detected.configure(highlightbackground=RED if self.validation_attempted and not found else BORDER)
+        color = RED if self.validation_attempted and not valid_file else BORDER
+        self.entry.configure(highlightbackground=color, highlightcolor=RED if color == RED else '#938dff')
 
     def task(self, kind):
         if self.busy:
             return
         self.has_interacted = True
-        if kind=='install' and not self.file.get().strip():
-            self.message.set('Escolha o arquivo .conf da sua conta Proton antes de instalar.')
-            return
+        if kind=='install':
+            self.validation_attempted = True
+            self.initial_status()
+            selected = Path(self.file.get().strip())
+            if not self.current.get('vencordFound') or not selected.is_file() or selected.suffix.lower() != '.conf':
+                self.result_title.set('Confira os campos destacados em vermelho')
+                self.message.set('Localize a pasta do Vencord e selecione ou arraste um arquivo .conf da sua conta Proton.')
+                return
         if kind=='uninstall' and not messagebox.askyesno('Desinstalar DiscordStreamTunnel',
                 'Remover a integração deste usuário e apagar sua configuração local?\n\nFeche o Discord antes de continuar.', parent=self.root):
             return
@@ -269,16 +315,16 @@ class InstallerWindow:
         def run():
             try:
                 if kind=='install':
-                    result = install(selected, progress=lambda text:self.events.put(('progress',text)))
+                    result = install(selected, self.preload, progress=lambda text:self.events.put(('progress',text)))
                 elif kind=='uninstall':
-                    result = uninstall()
+                    result = uninstall(self.preload)
                 elif kind=='repair':
                     if not (ROOT/'installation.json').is_file():
                         raise InstallError('A instalação está incompleta. Selecione seu .conf e use Instalar / reaplicar.')
                     repair()
-                    result = status()
+                    result = status(self.preload)
                 else:
-                    result = status()
+                    result = status(self.preload)
                     from diagnostics import save_report
                     try:result['diagnosticsFile'] = save_report(BASE,result)
                     except OSError:result['diagnosticsError'] = True
@@ -335,7 +381,7 @@ class InstallerWindow:
             if kind=='install':
                 title,text = 'Instalação concluída','Abra o Discord novamente e assista a uma transmissão para testar.'
             elif kind=='repair':
-                title,text = 'Integração reparada','O carregador foi verificado. A integração será carregada na próxima abertura do Discord.'
+                title,text = 'Integração reparada','O código e a chave de atualização foram verificados. A versão instalada será carregada na próxima abertura do Discord.'
             elif kind=='uninstall':
                 title,text = 'Integração removida','A configuração privada local foi apagada. Seu arquivo .conf original foi preservado.'
             else:
@@ -437,6 +483,11 @@ class InstallerWindow:
     def close(self):
         if not self.busy:
             self.root.destroy()
+
+    def cleanup(self, event):
+        if event.widget is self.root:
+            for timer in self.root.tk.splitlist(self.root.tk.call('after','info')):
+                self.root.after_cancel(timer)
 
 
 def run(initial_action='install'):

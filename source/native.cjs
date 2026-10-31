@@ -26,7 +26,7 @@ function start(root){
   while(Date.now()<deadline){
    const health=await probe();
    if(health?.configurationReady&&!health.stopping&&health.version===version&&health.ownerPID===process.ppid)return;
-   if(!health&&!spawned){const child=cp.spawn(command,args,{cwd:root,windowsHide:true,detached:true,stdio:'ignore',env:environment});child.on('error',()=>{});child.unref();spawned=true;}
+   if(!health&&!spawned){const child=cp.spawn(command,args,{cwd:root,windowsHide:true,detached:process.platform!=='win32',stdio:'ignore',env:environment});child.on('error',()=>{});child.unref();spawned=true;}
    await new Promise(r=>setTimeout(r,100));
   }throw Error('HelperUnavailable');
  }
@@ -38,7 +38,9 @@ function start(root){
  notice.catch(()=>{});
  require('./update.cjs').check(root,String(process.ppid)).then(()=>notice.then(()=>webFrame.executeJavaScript('window.__discordStreamTunnelUpdateNotice?.refresh()'))).catch(()=>{});
  const runtime=fs.readFileSync(path.join(__dirname,'runtime.template.js'),'utf8').replace('/*__CONFIG__*/null',JSON.stringify({relayPort:settings.relayPort,nonce:settings.nonce}));
- const boot=`(async()=>{for(let n=0;n<150;n++){try{${runtime};if(window.__discordProtonStreams){window.__discordProtonStreams.automatico(true);return;}}catch{}await new Promise(r=>setTimeout(r,100));}})()`;
+ // A cold Discord update can populate webpack after the old 15 second window.
+ // Back off after the fast startup path instead of permanently abandoning it.
+ const boot=`(async()=>{for(let n=0;n<240;n++){try{if(window.Vencord?.Webpack){${runtime};if(window.__discordProtonStreams){window.__discordProtonStreams.automatico(true);return;}}}catch{}await new Promise(r=>setTimeout(r,n<50?100:1000));}})()`;
  webFrame.executeJavaScript(boot).catch(()=>{});
 }
 module.exports={start};

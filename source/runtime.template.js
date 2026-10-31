@@ -4,21 +4,24 @@
   const key = '__discordProtonStreams';
   if (window[key]) return window[key].status();
   const W = Vencord.Webpack;
-  function streamStore() {
-    const usable = value => value && typeof value.getRTCConnections === 'function'
-      && typeof value.addChangeListener === 'function' && typeof value.removeChangeListener === 'function';
-    try { const value = W.findStore('StreamRTCConnectionStore'); if (usable(value)) return value; } catch {}
-    // Some Vencord builds cannot populate their store map after Discord updates.
-    // Inspect only loaded exports; do not depend on the broken lazy Flux lookup.
+  function loaded(predicate) {
+    // A lazy export or a throwing getter must not hide the remaining exports.
     for (const mod of Object.values(W.cache || {})) {
-      let values; try { values = [mod.exports, ...Object.values(mod.exports || {})]; } catch { continue; }
-      for (const value of values) try {
-        if (value?.constructor?.displayName === 'StreamRTCConnectionStore' && usable(value)) return value;
-      } catch {}
+      let exports; try { exports = mod.exports; if (predicate(exports)) return exports; } catch { continue; }
+      let names; try { names = Object.keys(exports || {}); } catch { continue; }
+      for (const name of names) try { const value = exports[name]; if (predicate(value)) return value; } catch {}
     }
     return null;
   }
-  const store = streamStore();
+  function findStore(name, usable) {
+    const matches = value => value?.constructor?.displayName === name && usable(value);
+    try { const value = W.fluxStores?.get(name); if (usable(value)) return value; } catch {}
+    const cached = loaded(matches); if (cached) return cached;
+    try { const value = W.findStore(name); if (usable(value)) return value; } catch {}
+    return null;
+  }
+  const store = findStore('StreamRTCConnectionStore', value => value && typeof value.getRTCConnections === 'function'
+    && typeof value.addChangeListener === 'function' && typeof value.removeChangeListener === 'function');
   if (!store) throw new Error('Stream connection store unavailable');
   const wrapped = new Map();
   const watchedRoots = new Map();
@@ -26,21 +29,26 @@
   let videoGuard = 'waiting', guardAttempts = 0;
   function applyVideoGuard() {
     if (!enabled || videoGuard === 'enabled' || videoGuard === 'unsupported') return;
-    if (typeof W.find !== 'function') {videoGuard = 'unsupported'; return;}
     const id = '2026-08-video-guard';
     try {
-      const experiment = W.find(x => x?.definition?.name === id, {isIndirect:true});
-      const apex = W.findStore('ApexExperimentStore');
+      const match = x => x?.definition?.name === id;
+      const experiment = loaded(match) || (typeof W.find === 'function' ? W.find(match, {isIndirect:true}) : null);
+      const apex = findStore('ApexExperimentStore', value => value && typeof value.getState === 'function');
       if (experiment?.definition?.defaultConfig?.videoEnabled === true && apex?.getState) {
         const before = apex.getState().clientOverrides?.[id]?.variantId ?? null;
+        const usable = value => value && typeof value.dispatch === 'function' && typeof value.subscribe === 'function';
+        let dispatcher; try { dispatcher = W.Common?.FluxDispatcher; if (typeof dispatcher?.dispatch !== 'function') dispatcher = null; } catch {}
+        dispatcher ||= loaded(usable);
+        if (before !== 0 && !dispatcher) throw new Error('VideoDispatcherUnavailable');
         window.DiscordProtonStreamsNative?.rememberVideoGuard?.(before);
-        if (before !== 0) W.Common.FluxDispatcher.dispatch({type:'APEX_EXPERIMENT_OVERRIDE_CREATE',experimentName:id,variantId:0});
+        if (before !== 0) dispatcher.dispatch({type:'APEX_EXPERIMENT_OVERRIDE_CREATE',experimentName:id,variantId:0});
         apex.persist?.();
         videoGuard = apex.getState().clientOverrides?.[id]?.variantId === 0 ? 'enabled' : 'unavailable';
-        return;
+        if (videoGuard === 'enabled') return;
       }
-    } catch {videoGuard = 'unavailable'; return;}
-    if (++guardAttempts < 60) setTimeout(applyVideoGuard, 500);
+    } catch {videoGuard = 'waiting';}
+    if (!W.find && !W.cache) {videoGuard = 'unsupported'; return;}
+    if (++guardAttempts < 60) setTimeout(applyVideoGuard, 500)?.unref?.();
     else videoGuard = 'unavailable';
   }
   const base = `ws://127.0.0.1:${config.relayPort}/relay`;

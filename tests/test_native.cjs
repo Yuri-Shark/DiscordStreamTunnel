@@ -17,9 +17,12 @@ async function main(){try{
  const renderer=vm.createContext({URL,URLSearchParams,crypto:require('crypto'),setTimeout,Vencord:{Webpack:{findStore(){throw TypeError('Reflect.get called on non-object');},cache:{stream:{exports:{store}}}}}});renderer.window=renderer;
  await vm.runInContext(scripts[0],renderer);
  assert.equal(renderer.__discordProtonStreams.status().automatic,true,'native bootstrap must allow runtime store fallback');
+ let polls=0;const late=vm.createContext({URL,URLSearchParams,crypto:require('crypto'),setTimeout(fn){polls++;if(polls===170)late.Vencord=renderer.Vencord;queueMicrotask(fn);}});late.window=late;
+ await vm.runInContext(scripts[0],late);
+ assert.equal(late.__discordProtonStreams.status().automatic,true,'a Discord update taking longer than the old startup window must still initialize');
  const result=await ipc.invoke('VencordBuild');assert.equal(result.ok,true);assert.equal(originalInvoked,1);
  assert.ok(fs.readFileSync(preload,'utf8').includes(repair.START));assert.equal(repair.clean(fs.readFileSync(preload,'utf8')),'// Vencord updated upstream\n');
  assert.equal(updateChecks,1);
- console.log('OK: actual native bootstrap repairs preload before VencordBuild promise resolves and starts background update check.');
+ console.log('OK: native bootstrap repairs Vencord updates, tolerates late webpack initialization and checks signed updates.');
 }finally{if(path.dirname(temp)!==os.tmpdir()||!path.basename(temp).startsWith('dts-native-test-'))throw Error('Unsafe cleanup');fs.rmSync(temp,{recursive:true,force:true});}}
 main().catch(error=>{console.error(error);process.exitCode=1;});

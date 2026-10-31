@@ -173,7 +173,17 @@ def repair():
     receipt=json.loads((ROOT/'installation.json').read_text())
     preload=Path(receipt['preload']);data=preload.read_bytes()
     if b'Vencord' not in data[:1500]:raise InstallError('Preload inesperado; nenhuma alteração foi feita.')
-    clean=strip_block(data);patched=clean+START+('try{require('+json.dumps(str(ROOT/'bootstrap.cjs'))+');}catch{}').encode()+END
+    clean=strip_block(data)
+    # Explicit repair with a newly downloaded installer also migrates the public
+    # update key. The WireGuard configuration and the running worker are retained.
+    active=json.loads((ROOT/'active.json').read_text())['version']
+    if tuple(map(int,VERSION.split('.')))>tuple(map(int,active.split('.'))):
+        destination=ROOT/'versions'/VERSION/'source'
+        if RESOURCE.resolve()!=destination.resolve():
+            shutil.copytree(RESOURCE,destination,dirs_exist_ok=True,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+        for name in ('bootstrap.cjs','trust.json'):atomic_write(ROOT/name,(RESOURCE/name).read_bytes())
+        atomic_write(ROOT/'active.json',json.dumps({'version':VERSION}).encode())
+    patched=clean+START+('try{require('+json.dumps(str(ROOT/'bootstrap.cjs'))+');}catch{}').encode()+END
     if data!=patched:
         backup=BASE/('preload-before-'+hashlib.sha256(clean).hexdigest()[:16]+'.js')
         if not backup.exists():atomic_write(backup,clean)
@@ -205,7 +215,7 @@ def launchers(remove=False):
 def status(preload_override=None):
     from diagnostics import runtime_snapshot
     preload=target_preload(preload_override)
-    return {'version':VERSION,'vencordFound':preload.exists(),'integrationInstalled':preload.exists() and START in preload.read_bytes(),
+    return {'version':VERSION,'vencordFound':preload.is_file(),'integrationInstalled':preload.is_file() and START in preload.read_bytes(),
         'configurationPresent':(BASE/'private-core.json').exists(),'corePresent':CORE.exists(),'dataDirectory':str(BASE),
         'runtime':runtime_snapshot(BASE)}
 

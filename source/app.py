@@ -25,6 +25,7 @@ def main():
     remove=sub.add_parser('uninstall');remove.add_argument('--headless',action='store_true');remove.add_argument('--preload')
     check=sub.add_parser('status');check.add_argument('--preload')
     sub.add_parser('diagnose')
+    sub.add_parser('repair')
     relay=sub.add_parser('worker');relay.add_argument('--owner-pid',type=int);relay.add_argument('--idle-exit',action='store_true')
     launch=sub.add_parser('launch');launch.add_argument('arguments',nargs=argparse.REMAINDER)
     args=parser.parse_args()
@@ -49,7 +50,7 @@ def main():
             if error.name!='tkinter':raise
             emit({'ok':False,'message':'Para a interface gráfica no Linux, instale python3-tk (Ubuntu) ou tk (Arch/CachyOS). A instalação por terminal continua disponível.'},args.report);return 1
         return 0
-    from installation import install as run_install,uninstall,status,InstallError
+    from installation import install as run_install,uninstall,status,repair,InstallError,VERSION
     if args.command is None:
         choice=input('1. Instalar / reaplicar\n2. Verificar\n3. Desinstalar\nEscolha: ').strip()
         args.command={'1':'install','2':'status','3':'uninstall'}.get(choice)
@@ -60,6 +61,8 @@ def main():
             from configuration import BASE
             from diagnostics import save_report
             result={'diagnosticsFile':save_report(BASE,status())}
+        elif args.command=='repair':
+            repair();result={'integrationRepaired':True,'version':VERSION,'restartDiscordRequired':True}
         elif args.command=='status':result=status(args.preload)
         elif args.command=='uninstall':result=uninstall(args.preload)
         else:

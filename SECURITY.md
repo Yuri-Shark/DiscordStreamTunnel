@@ -42,6 +42,21 @@ script para sobrescrever um executável em uso.
 
 ## Code signing policy
 
+A versão 1.4.0 recupera a publicação após perda da chave Ed25519 anterior.
+Os clientes anteriores não reconhecem a nova chave: é necessário baixar o
+novo instalador e clicar em Reparar uma vez (Linux: `python3 source/app.py repair`
+no pacote novo). Nenhum cliente aceita assinaturas inválidas para contornar
+essa migração. A partir da 1.4.0, uma assinatura não reconhecida gera um aviso
+para consultar manualmente a release oficial; o pacote permanece bloqueado.
+
+A nova chave privada fica criptografada por Windows DPAPI no perfil do usuário,
+fora do repositório, com permissões limitadas ao usuário e SYSTEM. Uma cópia
+fica no secret de Actions `DTS_RELEASE_SIGNING_KEY`. O script
+`scripts/publisher_key.ps1` envia a chave por stdin e assina sem criar um PEM
+em disco. O workflow de release recebe a chave apenas no passo de assinatura.
+DPAPI não é um backup portátil: a troca/perda do perfil Windows pode impedir
+a recuperação. Secrets do GitHub não podem ser exportados pela interface.
+
 Responsável pelo código, revisão e aprovação de releases: **Yuri-Shark**.
 A chave Ed25519 de publicação permanece fora do repositório e dos pacotes.
 Nunca publique configurações WireGuard, chaves privadas ou autorizações locais.

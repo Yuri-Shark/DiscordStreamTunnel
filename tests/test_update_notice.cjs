@@ -18,6 +18,10 @@ async function fixture(ready=true){
 }
 async function main(){
  const none=await fixture(false);assert.equal(none.body.children.length,0);assert.equal(none.calls,0);
+ none.update.phase='manual-update-required';await none.ctx.__discordStreamTunnelUpdateNotice.refresh();
+ assert.equal(none.actions()[1].href,'https://github.com/Yuri-Shark/DiscordStreamTunnel/releases/latest');
+ assert.equal(none.actions()[1].tag,'a');assert.equal(none.actions()[1].events.click,undefined);assert.equal(none.calls,0);
+ none.actions()[0].events.click();await none.ctx.__discordStreamTunnelUpdateNotice.refresh();assert.equal(none.body.children.length,0);
  const f=await fixture();assert.equal(f.calls,0);assert.equal(f.body.children.length,1);const panel=f.body.children[0];
  assert.equal(panel.style.position,'fixed');assert.equal(panel.style.top,'16px');assert.equal(panel.style.right,'16px');
  assert.equal(f.actions()[1].textContent,'Reiniciar e aplicar');

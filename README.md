@@ -12,6 +12,12 @@ exigem aviso prévio ao usuário.
 ## Instalar
 
 Baixe os pacotes em [Releases](https://github.com/Yuri-Shark/DiscordStreamTunnel/releases/latest).
+**Migração para 1.4.0:** a chave de assinatura anterior foi perdida. Quem usa
+1.2.4 ou uma versão anterior precisa baixar o pacote novo **uma vez**, fechar
+o Discord e clicar em **Reparar** no novo instalador. Isso atualiza o código
+e a chave pública sem pedir novamente o `.conf`. Depois, as atualizações
+assinadas voltam a funcionar automaticamente. O instalador antigo não pode
+autenticar esta troca de chave e não mostrará o aviso da versão nova.
 O [guia de primeira instalação em HTML](LEIA-ME-PRIMEIRO.html) pode ser aberto
 offline no navegador. Ele acompanha os pacotes Windows/Linux e também é gerado
 como arquivo separado para anexar à release.
@@ -20,7 +26,7 @@ da **própria conta Proton**. O portal permite gerar configurações no plano gr
 [instruções oficiais](https://protonvpn.com/support/wireguard-configurations).
 
 **Windows x64:** extraia o ZIP inteiro, encerre o Discord, execute
-`DiscordStreamTunnel.exe`, escolha seu `.conf` e clique em **Instalar / reaplicar**.
+`DiscordStreamTunnel.exe`, escolha ou arraste seu `.conf` para a janela e clique em **Instalar / reaplicar**.
 O programa inclui Python. Depois abra o Discord pelo atalho normal.
 
 O instalador tem tema escuro, ícone próprio e botões **Instalar / reaplicar**,
@@ -34,8 +40,8 @@ existente sem pedir novamente o `.conf`.
 Flatpak e Snap não são cobertos.
 
 ```sh
-tar -xzf DiscordStreamTunnel-1.3.0-linux.tar.gz
-cd DiscordStreamTunnel-1.3.0-linux
+tar -xzf DiscordStreamTunnel-1.4.0-linux.tar.gz
+cd DiscordStreamTunnel-1.4.0-linux
 sh instalar.sh
 ```
 
@@ -47,7 +53,38 @@ No Linux, a interface gráfica é opcional: instale `python3-tk` (Ubuntu) ou
 `tk` (CachyOS/Arch) e execute `python3 source/app.py --gui` dentro da pasta
 extraída. A instalação por terminal continua funcionando sem Tk.
 
-## O que mudou na 1.3.0
+## O que mudou na 1.4.0
+
+- A configuração de vídeo também encontra ApexExperimentStore e o dispatcher
+  nos módulos já carregados quando a busca do Vencord falha. Exports com
+  getters que lançam erros não escondem os demais módulos. A inicialização
+  tenta novamente se o Discord carregar seus módulos depois de 15 segundos.
+- Uma verificação lenta de recuperação não bloqueia outra tela. Falhas
+  transitórias encerram o controle afetado imediatamente com pedido de sessão
+  nova; a verificação do túnel acontece em segundo plano. As proteções contra
+  reinício de transmissões saudáveis continuam aplicadas.
+- **Instalar / reaplicar** destaca em vermelho a região do Vencord e o campo
+  `.conf` quando faltam. É possível localizar a pasta manualmente e arrastar
+  um `.conf` para qualquer região da janela Windows, inclusive com espaços
+  e acentos no caminho. Arquivos múltiplos ou de outro tipo são recusados.
+- **Reparar** com o pacote novo atualiza instalações anteriores, preservando
+  a configuração privada. Reparar com um pacote antigo não faz downgrade.
+- Nova chave Ed25519 após perda da anterior, guardada localmente com Windows
+  DPAPI e em um secret criptografado do GitHub Actions. A migração anterior é
+  manual; nenhuma verificação de assinatura foi desativada.
+- Esta versão também avisa quando uma atualização futura tiver assinatura
+  não reconhecida, com link fixo para conferir a release oficial, sem executar
+  o pacote. Esse aviso não pode ser adicionado retroativamente a versões antigas.
+- O auxiliar Windows inicia sem desacoplar sua criação do Discord. Ele já é
+  um processo filho do renderer, e o núcleo é filho do auxiliar. O agrupamento
+  visual no Gerenciador de Tarefas é decidido pelo Windows; os processos continuam
+  separados e visíveis em Detalhes. Não há garantia de uma única linha agrupada.
+
+Inclui também as melhorias da 1.3.0, que havia ficado como rascunho. Os testes
+reproduzem módulos atrasados, buscas quebradas e verificações lentas; não
+comprovam a latência do primeiro quadro em toda rede ou chamada real.
+
+## Melhorias de conexão incluídas (rascunho 1.3.0)
 
 - O auxiliar e o núcleo permanecem preparados enquanto o processo do Discord
   estiver aberto. O aquecimento passa a verificar o túnel a cada 30 segundos;
@@ -161,7 +198,7 @@ Quem abre um ZIP 1.1.x extraído anteriormente precisa baixar o instalador novo
 uma vez para obter esse recurso; a integração dentro do Discord continua
 recebendo atualizações automaticamente sem reinstalação.
 
-## Migração do repositório
+## Migração histórica do repositório (antes da 1.4.0)
 
 O repositório e o endereço canônico das atualizações passam a ser
 `Yuri-Shark/DiscordStreamTunnel`. Instalações com atualização automática
@@ -207,7 +244,7 @@ novamente uma vez para carregar o recurso; atualizações posteriores mostram o 
 
 ## Atualizações automáticas
 
-Na abertura do Discord, a integração consulta a última release pública deste
+Após a migração manual para a chave da 1.4.0, na abertura do Discord a integração consulta a última release pública deste
 repositório uma vez por processo do Discord, sem login e sem enviar credenciais.
 O manifesto tem assinatura Ed25519. O pacote e cada arquivo também têm SHA256.
 Assinaturas inválidas, versões anteriores e caminhos fora da pasta de código
@@ -264,21 +301,33 @@ com uma chave de publicação mantida **fora do repositório**. A chave privada
 nunca acompanha a release; `source/trust.json` contém apenas a chave pública.
 Atualizações distribuídas precisam ser assinadas pela chave correspondente.
 
-Para publicar, preserve a chave existente e baixe `update-manifest.json` da
-release anterior para uma pasta de publicação fora do repositório. Depois de
+Para publicar no Windows, a chave fica em
+`%LOCALAPPDATA%/DiscordStreamTunnelPublisher/release-signing-key.dpapi`, protegida
+com DPAPI do usuário e ACL privada. O script não grava um PEM em texto claro.
+Baixe `update-manifest.json` da release anterior para essa pasta e, depois de
 gerar os pacotes, execute:
 
 ```sh
-node scripts/sign_release.cjs /pasta-privada/release-signing-private.pem --compat-manifest /pasta-privada/update-manifest-anterior.json
+powershell -File scripts/publisher_key.ps1 -Action Sign -CompatibilityManifest CAMINHO_DO_MANIFESTO_ANTERIOR
 ```
 
 O script valida a assinatura anterior e deriva dela o endereço de
 compatibilidade. Publique **ambos** os manifestos, `runtime-bundle.json.gz` e
 os pacotes Windows/Linux na nova release, marcada como a mais recente.
 Inclua também `LEIA-ME-PRIMEIRO.html` e `SHA256SUMS.txt` gerados em `release/`.
-Não troque a chave nem publique apenas um dos manifestos: instalações antigas
-dependem desse caminho de migração. Commits, tags e releases anteriores são
+Não troque a chave nem publique apenas um dos manifestos: instalações migradas
+dependem desse caminho. A recuperação excepcional da 1.4.0 autentica o manifesto
+antigo com sua chave pública anterior, usando `-PreviousTrust`; isso não dá
+confiança automática à chave nova nos clientes antigos. Commits, tags e releases anteriores são
 preservados como histórico do projeto.
+
+O workflow **Build signed release draft**, iniciado manualmente no GitHub
+Actions, testa, compila, assina com `DTS_RELEASE_SIGNING_KEY` e cria um rascunho
+com os sete assets da versão. Não sobrescreve uma release existente. Use
+`publisher_key.ps1 -Action Upload` para repor o secret a partir da cópia DPAPI.
+Perder a conta/perfil Windows pode inutilizar essa cópia; o secret do GitHub
+não pode ser baixado de volta. Mantenha também um backup independente em um
+cofre de sua escolha antes de trocar de computador.
 
 O núcleo sing-box não é redistribuído: o instalador baixa a versão oficial
 1.14.3 e confere os hashes fixados em `source/core-download.json`.

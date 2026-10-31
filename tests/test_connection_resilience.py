@@ -147,6 +147,41 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(TimeoutError):await probe
         self.assertTrue(relay.tunnel_reachable);await relay.close()
 
+    async def test_slow_recovery_probe_does_not_block_another_screen(self):
+        entered=asyncio.Event();release=asyncio.Event()
+        @asynccontextmanager
+        async def connector(target,**options):yield Upstream()
+        relay=self.relay(connector)
+        async def check():entered.set();await release.wait();raise TimeoutError()
+        relay.check_tunnel=check
+        recovery=asyncio.create_task(relay.recover_tunnel(0))
+        try:
+            await asyncio.wait_for(entered.wait(),1)
+            async with serve(relay.handle,'127.0.0.1',0) as server:
+                async with connect(self.url(server),proxy=None) as client:
+                    self.assertEqual(await asyncio.wait_for(client.recv(),.5),'ready')
+                    self.assertFalse(recovery.done())
+                    release.set();self.assertFalse(await recovery)
+                    self.assertEqual(relay.stats['coreRestarts'],0)
+        finally:
+            release.set();await recovery;await relay.close()
+
+    async def test_failed_screen_closes_before_a_slow_recovery_probe(self):
+        entered=asyncio.Event();release=asyncio.Event()
+        @asynccontextmanager
+        async def connector(target,**options):raise ProxyError('synthetic');yield
+        relay=self.relay(connector)
+        async def check():entered.set();await release.wait();raise TimeoutError()
+        relay.check_tunnel=check
+        try:
+            async with serve(relay.handle,'127.0.0.1',0) as server:
+                async with connect(self.url(server),proxy=None) as client:
+                    with self.assertRaises(ConnectionClosed) as error:await asyncio.wait_for(client.recv(),1)
+                    self.assertEqual(error.exception.rcvd.code,4006)
+                    await asyncio.wait_for(entered.wait(),1)
+                    self.assertFalse(relay.pending_recovery.done())
+        finally:release.set();await relay.close()
+
     async def test_owned_discord_keeps_core_warm_after_idle_window(self):
         relay=self.relay();relay.owner_pid=1234;relay.last_control=time.monotonic()-1000
         relay.core.stop=AsyncMock()

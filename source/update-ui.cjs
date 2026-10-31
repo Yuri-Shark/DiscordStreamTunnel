@@ -3,7 +3,7 @@ const fs=require('fs'),path=require('path');
 const {newer}=require('./update.cjs');
 function state(root,runningVersion){
  const active=JSON.parse(fs.readFileSync(path.join(root,'active.json'),'utf8'));
- let phase='current';try{phase=JSON.parse(fs.readFileSync(path.join(root,'data','update-status.json'),'utf8')).state;}catch{}
+ let phase='current';try{const status=JSON.parse(fs.readFileSync(path.join(root,'data','update-status.json'),'utf8'));phase=status.errorClass==='InvalidSignature'?'manual-update-required':status.state;}catch{}
  let ready=false;
  if(/^\d+\.\d+\.\d+$/.test(active.version)&&newer(active.version,runningVersion)){
   const source=path.join(root,'versions',active.version,'source');

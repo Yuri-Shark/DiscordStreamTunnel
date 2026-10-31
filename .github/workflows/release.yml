@@ -1,0 +1,63 @@
+name: Build signed release draft
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: signed-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.8'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Require a new version and a publisher secret
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DTS_HAS_SIGNING_KEY: ${{ secrets.DTS_RELEASE_SIGNING_KEY != '' }}
+        shell: pwsh
+        run: |
+          if ($env:DTS_HAS_SIGNING_KEY -ne 'true') { throw 'DTS_RELEASE_SIGNING_KEY is required.' }
+          $version = (Get-Content source/version.json | ConvertFrom-Json).version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid version.' }
+          gh release view "v$version" 2>$null
+          if ($LASTEXITCODE -eq 0) { throw 'This release already exists; increment source/version.json.' }
+          "DTS_VERSION=$version" >> $env:GITHUB_ENV
+          exit 0
+      - name: Validate transport, installer and update security
+        shell: pwsh
+        run: |
+          python -c "import sys,unittest;sys.path[:0]=['source','source/vendor'];r=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.discover('tests',pattern='test_*.py'));sys.exit(not r.wasSuccessful())"
+          if ($LASTEXITCODE -ne 0) { throw 'Python tests failed.' }
+          Get-ChildItem tests/test_*.cjs | ForEach-Object {
+            node $_.FullName
+            if ($LASTEXITCODE -ne 0) { throw "Failed: $($_.Name)" }
+          }
+      - run: python -m pip install PyInstaller==6.22.3
+      - run: python scripts/build_windows.py
+      - run: python scripts/package_release.py
+      - name: Authenticate prior routing and sign release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DTS_RELEASE_PRIVATE_KEY: ${{ secrets.DTS_RELEASE_SIGNING_KEY }}
+        shell: pwsh
+        run: |
+          gh release download --repo $env:GITHUB_REPOSITORY --pattern update-manifest.json --dir $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot authenticate the previous release.' }
+          node scripts/sign_release.cjs --key-env --compat-manifest "$env:RUNNER_TEMP/update-manifest.json"
+          if ($LASTEXITCODE -ne 0) { throw 'Release signing failed.' }
+      - name: Create reviewable draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          gh release create "v$env:DTS_VERSION" --target $env:GITHUB_SHA --draft --title "DiscordStreamTunnel $env:DTS_VERSION" --generate-notes `
+            "release/DiscordStreamTunnel-$env:DTS_VERSION-Windows-x64.zip" "release/DiscordStreamTunnel-$env:DTS_VERSION-linux.tar.gz" `
+            release/LEIA-ME-PRIMEIRO.html release/runtime-bundle.json.gz release/update-manifest.json release/update-manifest-v2.json release/SHA256SUMS.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Draft creation failed.' }

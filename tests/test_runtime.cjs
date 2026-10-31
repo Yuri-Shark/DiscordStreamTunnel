@@ -61,6 +61,25 @@ function updatedDiscordTest() {
   console.log('OK: broken Vencord store lookup falls back to loaded exports; v8/9/10 allowed with query restrictions.');
 }
 updatedDiscordTest();
+function videoGuardRecoveryTest() {
+  const changes=new Set(),delayed=[],overrides={'2026-08-video-guard':{variantId:1}},remembered=[];
+  const stream={constructor:{displayName:'StreamRTCConnectionStore'},getRTCConnections:()=>({}),addChangeListener:f=>changes.add(f),removeChangeListener:f=>changes.delete(f)};
+  const apex={constructor:{displayName:'ApexExperimentStore'},getState:()=>({clientOverrides:overrides}),persist(){}};
+  const experiment={definition:{name:'2026-08-video-guard',defaultConfig:{videoEnabled:true}}};
+  const exports={};Object.defineProperty(exports,'broken',{enumerable:true,get(){throw TypeError('Lazy export unavailable');}});exports.stream=stream;exports.experiment=experiment;
+  const dispatcher={subscribe(){},dispatch(event){assert.equal(event.type,'APEX_EXPERIMENT_OVERRIDE_CREATE');overrides[event.experimentName]={variantId:event.variantId};}};
+  const ctx=vm.createContext({URL,URLSearchParams,crypto,setTimeout:fn=>{delayed.push(fn);},DiscordProtonStreamsNative:{rememberVideoGuard:value=>remembered.push(value)},
+    Vencord:{Webpack:{findStore(){throw TypeError('connectStores unavailable');},find(){throw TypeError('Lookup not ready');},cache:{main:{exports}}}}});ctx.window=ctx;
+  vm.runInContext(source,ctx);
+  assert.equal(ctx.__discordProtonStreams.status().videoGuard,'waiting','a missing Apex module must remain recoverable');
+  ctx.Vencord.Webpack.cache.apex={exports:{apex,dispatcher}};
+  delayed.shift()();
+  assert.equal(ctx.__discordProtonStreams.status().videoGuard,'enabled');
+  assert.deepEqual(remembered,[1]);assert.equal(overrides['2026-08-video-guard'].variantId,0);
+  ctx.__discordProtonStreams.remover();assert.equal(changes.size,0);
+  console.log('OK: video setup recovers from broken Vencord lookups, throwing exports and late Apex/dispatcher modules.');
+}
+videoGuardRecoveryTest();
 async function lazyStartupTest(){
   let ready,starts=0,renewed=0;
   const delayed=[],created=[];
