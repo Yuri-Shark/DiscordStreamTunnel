@@ -9,6 +9,7 @@ release/
 *.conf
 *.pem
 *.dpapi
+*.dtskey
 private*
 local-settings.json
 runtime.expr.js

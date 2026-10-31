@@ -19,6 +19,11 @@ jobs:
       - run: node tests/test_stream_startup.cjs
       - run: node tests/test_updates.cjs
       - run: node tests/test_sign_release.cjs
+      - run: node tests/test_publisher_backup.cjs
+      - name: Windows portable publisher recovery
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test_publisher_backup.ps1
       - run: node tests/test_native.cjs
       - run: node tests/test_helper_recovery.cjs
       - run: node tests/test_update_notice.cjs

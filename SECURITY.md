@@ -57,6 +57,20 @@ em disco. O workflow de release recebe a chave apenas no passo de assinatura.
 DPAPI não é um backup portátil: a troca/perda do perfil Windows pode impedir
 a recuperação. Secrets do GitHub não podem ser exportados pela interface.
 
+O backup portátil é criado por `scripts/publisher_backup.ps1` com senha digitada
+em uma janela local, sem senha ou chave privada em argumentos ou arquivos em
+texto claro. O arquivo `.dtskey` usa AES-256-GCM e scrypt (N=131072, r=8, p=1,
+salt de 32 bytes e nonce de 12 bytes), autentica também os metadados e verifica
+a recuperação e a correspondência com a chave pública antes de concluir.
+A pasta inclui Node.js, sua licença, `RESTAURAR.cmd`, o restaurador e a chave
+pública. O restauro recusa substituir uma chave já existente e protege a chave
+recuperada com DPAPI do novo perfil Windows. A senha não é salva na pasta.
+Guarde a pasta inteira em locais independentes e a senha separadamente;
+esquecer a senha impede a recuperação pelo backup. Esse backup é privado e
+nunca acompanha o repositório ou uma release.
+As primitivas são fornecidas por [Node.js crypto](https://nodejs.org/docs/latest-v24.x/api/crypto.html);
+o custo do scrypt segue a [referência da OWASP](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#scrypt).
+
 Responsável pelo código, revisão e aprovação de releases: **Yuri-Shark**.
 A chave Ed25519 de publicação permanece fora do repositório e dos pacotes.
 Nunca publique configurações WireGuard, chaves privadas ou autorizações locais.
