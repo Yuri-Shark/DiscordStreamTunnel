@@ -19,6 +19,7 @@ try {
     $testSecure = ConvertTo-SecureString $pair.privateKey -AsPlainText -Force
     try { ConvertFrom-SecureString $testSecure | Set-Content -LiteralPath $keyFile -Encoding ASCII } finally { $testSecure.Dispose() }
     $password = 'Synthetic publisher test password 123! ' + [char]0xE3 + [char]::ConvertFromUtf32(0x1F510)
+    Write-Output 'Checking password backup and portable packaging.'
     $created = New-PortableBackup $password
     if ($created -cne $testDestination) { throw 'Unexpected destination' }
     foreach ($name in 'node.exe','publisher_backup.ps1','publisher_backup.cjs','trust.json','release-signing-key.dtskey','SHA256SUMS.txt','RESTAURAR.cmd','LEIA-ME.txt','LICENSE-Node.txt') {
@@ -27,6 +28,7 @@ try {
     $Directory = Join-Path $testRoot 'restored'; $keyFile = Join-Path $Directory 'release-signing-key.dpapi'
     $BackupFile = Join-Path $created 'release-signing-key.dtskey'
     $cryptoScript = Join-Path $created 'publisher_backup.cjs'; $nodePath = Join-Path $created 'node.exe'
+    Write-Output 'Checking recovery with the bundled Node executable.'
     $restored = Restore-PortableBackup $password
     if ($restored -cne $keyFile) { throw 'Unexpected restored destination' }
     $protected = (Get-Content -LiteralPath $keyFile -Raw).Trim() | ConvertTo-SecureString

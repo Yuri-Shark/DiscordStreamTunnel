@@ -63,6 +63,10 @@ if(require.main===module){
     if(r.action==='decrypt')result.privateKey=key.export({type:'pkcs8',format:'pem'});
    }else throw Error('InvalidBackupAction');
    r.password=r.privateKey=undefined;process.stdout.write(JSON.stringify(result));
-  }catch{process.stderr.write('BackupOperationFailed');process.exitCode=1;}
+  }catch(error){
+   const known=new Set(['BackupAuthenticationFailed','PasswordTooShortOrLong','PublisherKeyMismatch','BackupRoundTripFailed','UnexpectedKeyFormat','InvalidBackupAction']);
+   const code=known.has(error.message)?error.message:(/^ERR_[A-Z_]{1,80}$/.test(error.code||'')?error.code:'BackupOperationFailed');
+   process.stderr.write(code);process.exitCode=1;
+  }
  });
 }

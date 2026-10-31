@@ -40,9 +40,13 @@ function Invoke-KeyCrypto($Request, [string]$Script = $cryptoScript) {
         $process.StandardInput.Write(($Request | ConvertTo-Json -Depth 12 -Compress))
         $process.StandardInput.Close()
         $result = $process.StandardOutput.ReadToEnd()
-        $null = $process.StandardError.ReadToEnd()
+        $errorCode = $process.StandardError.ReadToEnd()
         $process.WaitForExit()
-        if ($process.ExitCode -ne 0) { throw 'BackupCryptoFailed' }
+        if ($process.ExitCode -ne 0) {
+            $safeErrors = @('BackupAuthenticationFailed','PasswordTooShortOrLong','PublisherKeyMismatch','BackupRoundTripFailed','UnexpectedKeyFormat','InvalidBackupAction')
+            if ($safeErrors -notcontains $errorCode) { $errorCode = 'BackupOperationFailed' }
+            throw ('BackupCryptoFailed-' + $Request.action + '-exit' + $process.ExitCode + '-' + $errorCode)
+        }
         return ($result | ConvertFrom-Json)
     } finally { $process.Dispose(); $result = $null }
 }
