@@ -56,7 +56,7 @@ if(require.main===module){
  process.stdin.on('data',chunk=>{input+=chunk;if(Buffer.byteLength(input)>65536){process.stderr.write('BackupInputTooLarge');process.exit(1);}});
  process.stdin.on('end',()=>{
   try{
-   const r=JSON.parse(input);input='';let result;
+   const r=JSON.parse(input.trim());input='';let result;
    if(r.action==='encrypt'){const envelope=encrypt(r.privateKey,r.password,r.expectedPublicKey);result={envelope,fingerprint:fingerprint(envelope.publicKey)};}
    else if(r.action==='verify'||r.action==='decrypt'){
     const key=decrypt(r.envelope,r.password,r.expectedPublicKey);result={verified:true,fingerprint:fingerprint(publicKey(key))};

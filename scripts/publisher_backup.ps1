@@ -13,7 +13,11 @@ Add-Type -AssemblyName System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
 $cryptoScript = Join-Path $PSScriptRoot 'publisher_backup.cjs'
 $bundledNode = Join-Path $PSScriptRoot 'node.exe'
-$nodePath = if (Test-Path -LiteralPath $bundledNode) { $bundledNode } else { (Get-Command node.exe -ErrorAction Stop).Source }
+$nodePath = if (Test-Path -LiteralPath $bundledNode) { $bundledNode } else {
+    $commandPath = (Get-Command node.exe -ErrorAction Stop).Source
+    # Package the executable itself, rather than a possible PATH launcher/shim.
+    (& $commandPath -p 'process.execPath' | Out-String).Trim()
+}
 $trustPath = Join-Path $PSScriptRoot 'trust.json'
 if (!(Test-Path -LiteralPath $trustPath)) { $trustPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'source/trust.json' }
 $trust = Get-Content -LiteralPath $trustPath -Raw | ConvertFrom-Json
@@ -37,8 +41,11 @@ function Invoke-KeyCrypto($Request, [string]$Script = $cryptoScript) {
     $process.StartInfo = $info
     try {
         [void]$process.Start()
-        $process.StandardInput.Write(($Request | ConvertTo-Json -Depth 12 -Compress))
-        $process.StandardInput.Close()
+        # Windows PowerShell otherwise inherits an OEM encoding or emits a BOM.
+        # Explicit UTF-8 bytes preserve the SAME password on a different Windows.
+        $inputBytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($Request | ConvertTo-Json -Depth 12 -Compress))
+        $process.StandardInput.BaseStream.Write($inputBytes,0,$inputBytes.Length)
+        $process.StandardInput.BaseStream.Close()
         $result = $process.StandardOutput.ReadToEnd()
         $errorCode = $process.StandardError.ReadToEnd()
         $process.WaitForExit()
@@ -48,7 +55,10 @@ function Invoke-KeyCrypto($Request, [string]$Script = $cryptoScript) {
             throw ('BackupCryptoFailed-' + $Request.action + '-exit' + $process.ExitCode + '-' + $errorCode)
         }
         return ($result | ConvertFrom-Json)
-    } finally { $process.Dispose(); $result = $null }
+    } finally {
+        if ($inputBytes) { [Array]::Clear($inputBytes,0,$inputBytes.Length) }
+        $process.Dispose(); $result = $null
+    }
 }
 function Protect-PublisherDirectory {
     [void][IO.Directory]::CreateDirectory($Directory)

@@ -1,4 +1,6 @@
 $ErrorActionPreference = 'Stop'
+# Exercise the UTF-8 BOM default used by hosted Windows PowerShell runners.
+[Console]::InputEncoding = [Text.Encoding]::UTF8
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('DTS-Publisher-Test-' + [Guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($testRoot)
 $publisherScript = Join-Path (Split-Path $PSScriptRoot -Parent) 'scripts/publisher_backup.ps1'
@@ -25,6 +27,9 @@ try {
     foreach ($name in 'node.exe','publisher_backup.ps1','publisher_backup.cjs','trust.json','release-signing-key.dtskey','SHA256SUMS.txt','RESTAURAR.cmd','LEIA-ME.txt','LICENSE-Node.txt') {
         if (!(Test-Path -LiteralPath (Join-Path $created $name))) { throw 'Incomplete portable package' }
     }
+    # Independently use the original Unicode password, without the PS pipe.
+    & node -e "const f=require('fs'),p=require('path'),b=require(process.argv[1]);b.decrypt(JSON.parse(f.readFileSync(process.argv[2],'utf8')),'Synthetic publisher test password 123! \u00e3\u{1F510}');" (Join-Path $created 'publisher_backup.cjs') (Join-Path $created 'release-signing-key.dtskey')
+    if ($LASTEXITCODE -ne 0) { throw 'Unicode password was changed by Windows encoding' }
     $Directory = Join-Path $testRoot 'restored'; $keyFile = Join-Path $Directory 'release-signing-key.dpapi'
     $BackupFile = Join-Path $created 'release-signing-key.dtskey'
     $cryptoScript = Join-Path $created 'publisher_backup.cjs'; $nodePath = Join-Path $created 'node.exe'
