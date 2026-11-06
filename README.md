@@ -40,8 +40,8 @@ existente sem pedir novamente o `.conf`.
 Flatpak e Snap não são cobertos.
 
 ```sh
-tar -xzf DiscordStreamTunnel-1.5.0-linux.tar.gz
-cd DiscordStreamTunnel-1.5.0-linux
+tar -xzf DiscordStreamTunnel-1.5.1-linux.tar.gz
+cd DiscordStreamTunnel-1.5.1-linux
 sh instalar.sh
 ```
 
@@ -52,6 +52,32 @@ com seu usuário normal. Instale Vencord pelas [instruções oficiais](https://v
 No Linux, a interface gráfica é opcional: instale `python3-tk` (Ubuntu) ou
 `tk` (CachyOS/Arch) e execute `python3 source/app.py --gui` dentro da pasta
 extraída. A instalação por terminal continua funcionando sem Tk.
+
+## O que mudou na 1.5.1
+
+- A integração aguarda o módulo Flux antes de consultar os stores do Vencord.
+  Isso evita esgotar a busca de componentes na primeira abertura. A espera não
+  depende de o Gateway direto conectar, pois ele pode precisar do próprio túnel.
+- Pontes UDP estabelecidas verificam o mesmo caminho após um período sem
+  respostas. A verificação usa apenas a descoberta de IP que já funcionou
+  naquela ponte, com até três tentativas em oito segundos. Vídeo pausado que
+  responde à verificação permanece conectado; mídia e autenticação não são repetidas.
+- Uma ponte sem resposta ou com mudança do endereço/porta externos pede uma
+  sessão nova ao Discord. A recuperação também verifica o túnel em segundo
+  plano, preservando outras transmissões saudáveis. As respostas das consultas
+  internas não são entregues ao cliente como se fossem uma descoberta nova.
+- **Verificar** inclui contadores e eventos de falha do caminho UDP, sem expor
+  endereços, tokens ou conteúdo. Um congelamento de decodificação com UDP ainda
+  funcionando exige diagnóstico separado; o addon não decodifica o vídeo.
+
+Para atualizar manualmente, extraia o pacote **1.5.1** completo, feche o Discord,
+abra o instalador novo e clique em **Reparar**. A configuração `.conf` já
+importada é preservada. Reabra o Discord. Instalações com a chave atual também
+podem receber a atualização assinada após sua publicação.
+
+Os testes reproduzem essas falhas de transporte e inicialização. O relato do
+PC afetado ainda precisa ser validado nele; instalar a correção não garante
+resolver quedas externas ou qualquer causa de tela preta.
 
 ## O que mudou na 1.5.0
 

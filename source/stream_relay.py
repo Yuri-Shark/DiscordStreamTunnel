@@ -31,6 +31,8 @@ SID=re.compile(r'[a-f0-9]{32}\Z')
 class MissingConfiguration(Exception): pass
 class TunnelRestarted(ConnectionError): pass
 class MediaStartupTimeout(ConnectionError): pass
+class MediaPathTimeout(ConnectionError): pass
+class MediaEndpointChanged(ConnectionError): pass
 
 def valid_target(target):
     try:
@@ -146,8 +148,10 @@ class LocalDatagrams(asyncio.DatagramProtocol):
         if addr[0]!='127.0.0.1' or len(data)>65507: return
         if b.peer is None: b.peer=addr
         if addr!=b.peer: return
-        if len(data)==74 and data[:4]==b'\x00\x01\x00\x46' and b.discovery_packet is None:
-            b.discovery_packet=data;b.discovery_started=time.monotonic();b.discovery_pending.set()
+        if len(data)==74 and data[:4]==b'\x00\x01\x00\x46':
+            b.native_discovery_pending=True
+            if b.discovery_packet is None:
+                b.discovery_packet=data;b.discovery_started=time.monotonic();b.discovery_pending.set()
         try: b.queue.put_nowait(data)
         except asyncio.QueueFull: b.stats['udpQueueDrops']+=1
 
@@ -159,6 +163,8 @@ class MediaBridge:
         self.discovery_packet=None;self.discovery_started=None;self.discovery_ms=None
         self.discovery_pending=asyncio.Event();self.discovery_done=asyncio.Event()
         self.startup_timeout=8
+        self.last_down_at=None;self.discovery_endpoint=None;self.native_discovery_pending=False
+        self.path_response=asyncio.Event();self.path_check_interval=30;self.path_check_timeout=8
     @classmethod
     async def create(cls,settings,target,stats):
         socks=await asyncio.wait_for(SocksUDP.create(settings['socksPort'],'discord-stream',settings['nonce']),5)
@@ -197,9 +203,24 @@ class MediaBridge:
         remaining=max(0,self.startup_timeout-(time.monotonic()-self.discovery_started))
         try:await asyncio.wait_for(self.discovery_done.wait(),remaining)
         except asyncio.TimeoutError:raise MediaStartupTimeout('UDPDiscoveryTimeout') from None
-        # Successful setup isn't a terminated transport task. Stay dormant;
-        # silence in paused video must never trigger a reconnect.
-        await asyncio.Future()
+        await self.watch_path()
+    async def watch_path(self):
+        # Silence alone is normal for paused video. Check the SAME association
+        # using only the idempotent discovery packet that already worked here.
+        # Any resumed traffic also confirms the path. Never replay media/control.
+        while True:
+            await asyncio.sleep(self.path_check_interval)
+            if self.last_down_at is not None and time.monotonic()-self.last_down_at<self.path_check_interval:continue
+            self.path_response.clear()
+            self.stats['udpPathChecks']=self.stats.get('udpPathChecks',0)+1
+            for attempt in range(3):
+                await self.socks.send(self.target,self.discovery_packet)
+                self.stats['udpPathProbes']=self.stats.get('udpPathProbes',0)+1
+                self.stats['udpUpBytes']+=len(self.discovery_packet);self.stats['udpUpPackets']+=1
+                try:await asyncio.wait_for(self.path_response.wait(),self.path_check_timeout/3)
+                except asyncio.TimeoutError:
+                    if attempt==2:raise MediaPathTimeout('UDPPathTimeout') from None
+                else:break
     async def inbound(self):
         while True:
             try: target,data=await self.socks.receive()
@@ -207,11 +228,25 @@ class MediaBridge:
                 self.stats['udpMalformedPackets']=self.stats.get('udpMalformedPackets',0)+1
                 continue
             if target!=self.target or self.peer is None: continue
-            self.transport.sendto(data,self.peer)
-            if self.first_down_at is None:self.first_down_at=time.monotonic()
-            if (self.discovery_packet is not None and len(data)==74 and data[:4]==b'\x00\x02\x00\x46'
-                    and data[4:8]==self.discovery_packet[4:8] and not self.discovery_done.is_set()):
-                self.discovery_ms=round((time.monotonic()-self.discovery_started)*1000);self.discovery_done.set()
+            discovery=len(data)==74 and data[:4]==b'\x00\x02\x00\x46'
+            forward=True
+            if discovery:
+                if self.discovery_packet is None or data[4:8]!=self.discovery_packet[4:8]:continue
+                # Keep the external mapping private. A changed NAT mapping
+                # requires fresh Discord negotiation, not a silent endpoint swap.
+                try:endpoint=(str(ipaddress.ip_address(data[8:72].split(b'\0',1)[0].decode('ascii'))),struct.unpack('!H',data[72:74])[0])
+                except (ValueError,UnicodeError):endpoint=None
+                if self.discovery_done.is_set():
+                    if endpoint is not None and self.discovery_endpoint is not None and endpoint!=self.discovery_endpoint:
+                        raise MediaEndpointChanged('UDPMappingChanged')
+                    forward=self.native_discovery_pending
+                else:
+                    self.discovery_endpoint=endpoint
+                    self.discovery_ms=round((time.monotonic()-self.discovery_started)*1000);self.discovery_done.set()
+                self.native_discovery_pending=False
+            if forward:self.transport.sendto(data,self.peer)
+            self.last_down_at=time.monotonic();self.path_response.set()
+            if self.first_down_at is None:self.first_down_at=self.last_down_at
             self.stats['udpDownBytes']+=len(data);self.stats['udpDownPackets']+=1
             self.stats['lastUdpDownAt']=time.time()
     async def close(self):
@@ -234,6 +269,7 @@ class Relay:
             'udpUpBytes':0,'udpDownBytes':0,'udpUpPackets':0,'udpDownPackets':0,'udpQueueDrops':0,
             'udpReceiveQueueDrops':0,'udpMalformedPackets':0,'udpDiscoveryRetries':0,'controlRetries':0,
             'mediaStartupTimeouts':0,'mediaResets':0,'coreRestarts':0,'lastUdpDownAt':None,'lastErrorClass':None}
+        self.stats.update(udpPathChecks=0,udpPathProbes=0,mediaPathTimeouts=0,mediaPathChanges=0)
         self.stats.update(activeGatewayControls=0,openedGatewayControls=0,gatewayConnectMs=None,
             gatewayUpBytes=0,gatewayDownBytes=0,gatewayRetries=0)
         self.events=[]
@@ -299,6 +335,7 @@ class Relay:
     def healthy_streams(self):
         for session in self.sessions.values():
             if not session.connected:continue
+            if session.media is not None and any(task.done() for task in getattr(session.media,'tasks',())):continue
             # Give controls time to negotiate media. After that, a control
             # alone is insufficient evidence of a working UDP path.
             if session.connected_at is not None and self.clock()-session.connected_at<15:return True
@@ -347,7 +384,7 @@ class Relay:
         recent_media=self.stats['lastUdpDownAt'] is not None and time.time()-self.stats['lastUdpDownAt']<30
         reachable=True if recent_media else self.tunnel_reachable if self.tunnel_checked_at is not None and time.time()-self.tunnel_checked_at<60 else None
         return {'service':'DiscordStreamTunnel','protocolVersion':1,'pid':os.getpid(),'ownerPID':self.owner_pid,'configurationReady':(BASE/'private-core.json').exists(),'coreRunning':self.core.running,
-            'version':VERSION,'buildRevision':'gateway-20261031','warmupMs':self.warmup_ms,
+            'version':VERSION,'buildRevision':'media-liveness-20261105','warmupMs':self.warmup_ms,
             'keepWarm':bool(self.owner_pid),'lastWarmupAgeSeconds':None if self.warmed_at is None else round(time.monotonic()-self.warmed_at,1),
             'stopping':self.stopping,'coreGeneration':self.generation,
             'tunnelReachable':reachable,'lastTunnelCheckAt':self.tunnel_checked_at,
@@ -575,13 +612,17 @@ class Relay:
                     session.failure_handled=True
                     errors=[task.exception() for task in session.media.tasks if task.done() and not task.cancelled()]
                     startup=any(isinstance(error,MediaStartupTimeout) for error in errors)
-                    self.stats['lastErrorClass']='MediaStartupTimeout' if startup else 'MediaTransportClosed'
+                    path_timeout=any(isinstance(error,MediaPathTimeout) for error in errors)
+                    path_changed=any(isinstance(error,MediaEndpointChanged) for error in errors)
+                    self.stats['lastErrorClass']='MediaStartupTimeout' if startup else 'MediaPathTimeout' if path_timeout else 'MediaEndpointChanged' if path_changed else 'MediaTransportClosed'
                     if startup:self.stats['mediaStartupTimeouts']+=1
-                    self.note('media-startup-timeout' if startup else 'media-transport-closed')
+                    if path_timeout:self.stats['mediaPathTimeouts']+=1
+                    if path_changed:self.stats['mediaPathChanges']+=1
+                    self.note('media-startup-timeout' if startup else 'media-path-timeout' if path_timeout else 'media-path-changed' if path_changed else 'media-transport-closed')
                     previous=session.media;session.media=None;session.media_target=None
                     session.connected=False
                     await previous.close()
-                    if startup:self.request_recovery()
+                    self.request_recovery()
                     # A broken association cannot be resumed. Ask for fresh
                     # identification / READY rather than reusing dead media.
                     with suppress(Exception):await session.client.close(4006)

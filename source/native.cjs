@@ -39,8 +39,12 @@ function start(root){
  require('./update.cjs').check(root,String(process.ppid)).then(()=>notice.then(()=>webFrame.executeJavaScript('window.__discordStreamTunnelUpdateNotice?.refresh()'))).catch(()=>{});
  const runtime=fs.readFileSync(path.join(__dirname,'runtime.template.js'),'utf8').replace('/*__CONFIG__*/null',JSON.stringify({relayPort:settings.relayPort,nonce:settings.nonce}));
  // A cold Discord update can populate webpack after the old 15 second window.
+ // Webpack exists before its modules are ready. Early findStore calls exhaust
+ // Vencord's lazy Flux lookup and break UI plugins for the entire first session.
+ // Wait for Flux's module, not CONNECTION_OPEN: the direct Gateway may itself
+ // need this tunnel before it can connect. waitFor is safe before cache exists.
  // Back off after the fast startup path instead of permanently abandoning it.
- const boot=`(async()=>{for(let n=0;n<240;n++){try{if(window.Vencord?.Webpack){${runtime};if(window.__discordProtonStreams){window.__discordProtonStreams.automatico(true);return;}}}catch{}await new Promise(r=>setTimeout(r,n<50?100:1000));}})()`;
+ const boot=`(async()=>{for(let n=0;n<240;n++){try{if(window.Vencord?.Webpack){const webpack=window.Vencord.Webpack;if(typeof webpack.waitFor==='function')await new Promise(resolve=>webpack.waitFor(['connectStores'],()=>resolve()));else await webpack.onceReady;${runtime};if(window.__discordProtonStreams){window.__discordProtonStreams.automatico(true);return;}}}catch{}await new Promise(r=>setTimeout(r,n<50?100:1000));}})()`;
  webFrame.executeJavaScript(boot).catch(()=>{});
 }
 module.exports={start};

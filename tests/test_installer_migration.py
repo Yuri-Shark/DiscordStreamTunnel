@@ -8,6 +8,22 @@ import installation
 
 
 class InstallerMigrationTests(unittest.TestCase):
+    def test_current_package_repairs_old_runtime_and_preserves_private_configuration(self):
+        resource=Path(installation.__file__).resolve().parent
+        with tempfile.TemporaryDirectory(prefix='dts-upgrade-') as directory:
+            root=Path(directory);data=root/'data';data.mkdir();source=root/'package-source';source.mkdir()
+            names=('native.cjs','stream_relay.py','diagnostics.py','version.json','trust.json','bootstrap.cjs')
+            for name in names:(source/name).write_bytes((resource/name).read_bytes())
+            preload=root/'preload.js';preload.write_bytes(b'// Vencord upstream\n')
+            (root/'installation.json').write_text(json.dumps({'preload':str(preload)}))
+            (root/'active.json').write_text('{"version":"0.0.1"}')
+            config=data/'private-core.json';original=b'private configuration must remain byte-identical';config.write_bytes(original)
+            with patch.object(installation,'ROOT',root),patch.object(installation,'BASE',data),patch.object(installation,'RESOURCE',source):
+                installation.repair()
+            self.assertEqual(json.loads((root/'active.json').read_text())['version'],installation.VERSION)
+            for name in names:self.assertEqual((root/'versions'/installation.VERSION/'source'/name).read_bytes(),(resource/name).read_bytes())
+            self.assertEqual(config.read_bytes(),original)
+
     def test_repair_with_new_installer_migrates_code_and_key_without_conf(self):
         with tempfile.TemporaryDirectory(prefix='dts-migrate-') as directory:
             root=Path(directory);data=root/'data';data.mkdir()

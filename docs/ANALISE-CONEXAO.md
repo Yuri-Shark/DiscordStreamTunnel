@@ -67,6 +67,62 @@ limite de duas conexões Gateway, isolamento dos contadores de mídia e espera
 pelo auxiliar. O controle de mídia mantém limite de 1 MiB. Contadores Gateway
 não comprovam tráfego UDP saudável e não impedem a recuperação da mídia.
 
+## Revisão de 05/11/2026 — inicialização e perda silenciosa de UDP
+
+Foram relatados erros de tela preta na inicialização e após 30–60 minutos,
+aliviados temporariamente por reparo/reinício, e congelamentos que exigiam
+reabrir a transmissão. Não foi coletado diagnóstico do PC afetado. O intervalo
+relatado, sozinho, não identifica a causa nem comprova expiração do WireGuard.
+
+Na instalação local, foi reproduzida uma falha independente de inicialização:
+o bootstrap acessava `findStore` antes de os módulos do Discord estarem prontos,
+esgotando a busca lazy de Flux e quebrando componentes do Vencord até recarregar.
+A versão 1.5.1 usa `Webpack.waitFor` para aguardar `connectStores`, sem consumir
+essa busca antecipadamente. Não aguarda `CONNECTION_OPEN`, pois exigir conexão
+direta antes de instalar a rota do Gateway bloquearia o uso do próprio túnel.
+
+O relay também tinha uma lacuna verificável: após a descoberta inicial, a tarefa
+de descoberta ficava suspensa para sempre. Uma associação UDP que deixasse de
+entregar pacotes, mantendo seu controle TCP aberto, não encerrava nenhuma tarefa.
+O primeiro pacote recebido continuava protegendo essa ponte como saudável,
+mesmo após perda definitiva do caminho. Os testes novos reproduzem esse estado.
+
+Depois de uma descoberta bem-sucedida, a ponte verifica períodos sem UDP recebido
+em intervalos de 30 segundos. Somente quando falta tráfego recente, envia a mesma
+consulta de descoberta, até três vezes em oito segundos. Tráfego que volta a
+chegar também confirma o caminho. Respostas da verificação são consumidas pelo
+relay; a resposta solicitada pelo próprio Discord continua sendo encaminhada.
+Pacotes de mídia, autenticação e DAVE não são repetidos ou decodificados.
+
+Se nenhuma resposta chegar, a manutenção descarta apenas a ponte afetada e fecha
+seu controle com `4006`, solicitando nova negociação nativa. Mudança do mapeamento
+externo de IP/porta faz o mesmo: a negociação anterior não pode continuar usando
+o endereço antigo. Endereços ficam somente em memória e não são diagnosticados.
+Falhas de transporte também agendam a verificação do túnel em segundo plano.
+As proteções de outras transmissões, duas verificações malsucedidas e intervalo
+entre reinícios continuam aplicadas. Tarefas encerradas não protegem uma ponte
+com base em tráfego histórico. Vídeo pausado que responde à consulta não é
+reconectado apenas por estar sem quadros.
+
+Os contadores `udpPathChecks`, `udpPathProbes`, `mediaPathTimeouts` e
+`mediaPathChanges` e os eventos `media-path-timeout`/`media-path-changed` permitem
+distinguir essa recuperação no relatório filtrado. Nenhum payload é registrado.
+
+A validação inclui perda silenciosa após 120 ciclos saudáveis acelerados
+(equivalentes a uma hora da cadência nominal, sem esperar uma hora real), perda
+temporária de respostas, retomada de mídia durante a consulta, mudança de porta,
+cancelamento, fontes/SSRC incorretos e migração pelo instalador sem alterar a
+configuração privada. A espera de inicialização também é testada com o Gateway
+direto incapaz de completar `CONNECTION_OPEN`.
+
+São testes determinísticos do transporte, não uma reprodução de uma chamada de
+uma hora no computador relatado. Receber UDP não comprova imagem decodificada;
+congelamentos de codec, GPU, DAVE ou do transmissor podem exigir investigação
+separada. Não foi incluída reconexão periódica de transmissões saudáveis.
+
+Referências de protocolo: [descoberta UDP e negociação do Discord](https://docs.discord.com/developers/topics/voice-connections#ip-discovery)
+e [códigos de fechamento](https://docs.discord.com/developers/topics/opcodes-and-status-codes#voice-voice-close-event-codes).
+
 ## Revisão de 31/10/2026
 
 O usuário esclareceu que o vídeo aparece após uma espera, tanto no envio

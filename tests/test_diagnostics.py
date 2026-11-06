@@ -39,5 +39,17 @@ class DiagnosticTests(unittest.TestCase):
             self.assertTrue(report['stale']);self.assertNotIn('lastErrorClass',report)
             self.assertNotIn('controlRetries',report);self.assertEqual(report['streams'],[])
 
+    def test_path_recovery_counters_and_events_survive_the_allowlist_without_endpoints(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory)
+            (base/'status.json').write_text(json.dumps({'udpPathChecks':120,'udpPathProbes':122,
+                'mediaPathTimeouts':1,'mediaPathChanges':1,'discovery_endpoint':'DO-NOT-SHARE',
+                'recentEvents':[{'event':'media-path-timeout','at':time.time()},
+                    {'event':'media-path-changed','endpoint':'DO-NOT-SHARE'}]}),encoding='utf-8')
+            result=runtime_snapshot(base)
+            self.assertEqual(result['udpPathChecks'],120);self.assertEqual(result['mediaPathTimeouts'],1)
+            self.assertEqual([event['event'] for event in result['recentEvents']],['media-path-timeout','media-path-changed'])
+            self.assertNotIn('DO-NOT-SHARE',json.dumps(result))
+
 
 if __name__=='__main__':unittest.main()

@@ -20,6 +20,33 @@ async function main(){try{
  let polls=0;const late=vm.createContext({URL,URLSearchParams,crypto:require('crypto'),setTimeout(fn){polls++;if(polls===170)late.Vencord=renderer.Vencord;queueMicrotask(fn);}});late.window=late;
  await vm.runInContext(scripts[0],late);
  assert.equal(late.__discordProtonStreams.status().automatic,true,'a Discord update taking longer than the old startup window must still initialize');
+ // Vencord exposes Webpack before Discord has loaded its Flux modules. Calling
+ // findStore then exhausts Flux's lazy lookup and breaks unrelated UI plugins.
+ let resolveReady,discordReady=false,earlyLookups=0,earlyScans=0;
+ const onceReady=new Promise(resolve=>{resolveReady=resolve;});
+ const cold=vm.createContext({URL,URLSearchParams,crypto:require('crypto'),setTimeout(){},Vencord:{Webpack:{onceReady,
+  findStore(){if(!discordReady){earlyLookups++;throw Error('Flux is not ready');}return null;},
+  get cache(){earlyScans++;return undefined;}}}});cold.window=cold;
+ const coldBoot=vm.runInContext(scripts[0],cold);
+ await Promise.resolve();
+ assert.equal(earlyLookups,0,'cold startup must not consume Vencord lazy lookup attempts before onceReady');
+ assert.equal(earlyScans,0,'cold startup must wait before scanning incomplete module exports');
+ assert.equal(cold.__discordProtonStreams,undefined);
+ Object.defineProperty(cold.Vencord.Webpack,'cache',{value:{stream:{exports:{store}}}});
+ discordReady=true;resolveReady();await coldBoot;
+ assert.equal(cold.__discordProtonStreams.status().automatic,true,'the tunnel must activate after Discord is ready');
+ assert.equal(earlyLookups,0,'startup must not look up Flux before Discord is ready');
+ // CONNECTION_OPEN may be blocked on the direct route. Module availability is
+ // sufficient; waiting for an authenticated Gateway here would deadlock startup.
+ let fluxLoaded;const neverConnected=new Promise(()=>{});
+ const offline=vm.createContext({URL,URLSearchParams,crypto:require('crypto'),setTimeout,
+  Vencord:{Webpack:{onceReady:neverConnected,waitFor(filter,callback){assert.equal(filter[0],'connectStores');fluxLoaded=callback;},
+   findStore(){throw Error('must use loaded store');}}}});offline.window=offline;
+ const offlineBoot=vm.runInContext(scripts[0],offline);
+ assert.equal(typeof fluxLoaded,'function');assert.equal(offline.__discordProtonStreams,undefined);
+ offline.Vencord.Webpack.cache={stream:{exports:{store}}};fluxLoaded();
+ let timeout;try{await Promise.race([offlineBoot,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(Error('bootstrap waited for Gateway instead of Flux')),1000);})]);}finally{clearTimeout(timeout);}
+ assert.equal(offline.__discordProtonStreams.status().automatic,true,'Gateway routing must start before CONNECTION_OPEN');
  const result=await ipc.invoke('VencordBuild');assert.equal(result.ok,true);assert.equal(originalInvoked,1);
  assert.ok(fs.readFileSync(preload,'utf8').includes(repair.START));assert.equal(repair.clean(fs.readFileSync(preload,'utf8')),'// Vencord updated upstream\n');
  assert.equal(updateChecks,1);
