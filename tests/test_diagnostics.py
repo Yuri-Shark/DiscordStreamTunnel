@@ -3,11 +3,23 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
-from diagnostics import runtime_snapshot,save_report,playback_snapshot
+from diagnostics import runtime_snapshot,save_report,playback_snapshot,environment_snapshot
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_environment_distinguishes_windows_builds_without_device_identifiers(self):
+        for build in (19045,26200):
+            with patch('diagnostics.sys.platform','win32'), \
+                    patch('diagnostics.sys.getwindowsversion',create=True,return_value=SimpleNamespace(major=10,minor=0,build=build)):
+                result=environment_snapshot()
+            self.assertEqual(result['windows'],{'major':10,'minor':0,'build':build})
+            self.assertEqual(set(result),{'platform','python','windows'})
+        with patch('diagnostics.sys.platform','linux'):
+            self.assertNotIn('windows',environment_snapshot())
+
     def test_playback_report_allows_only_numeric_counters_and_known_states(self):
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory)
@@ -35,6 +47,7 @@ class DiagnosticTests(unittest.TestCase):
             (base/'status.json').write_text(json.dumps(record),encoding='utf-8')
             destination=save_report(base,{'version':'1.3.0','configurationPresent':True,'dataDirectory':'DO-NOT-SHARE'})
             raw=Path(destination).read_text(encoding='utf-8');report=json.loads(raw)
+            self.assertIn('platform',report['environment'])
             self.assertNotIn('DO-NOT-SHARE',raw)
             self.assertFalse(report['runtime']['stale'])
             self.assertEqual(report['runtime']['lastErrorClass'],'MediaStartupTimeout')

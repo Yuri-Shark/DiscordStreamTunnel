@@ -25,9 +25,16 @@ como arquivo separado para anexar à release.
 da **própria conta Proton**. O portal permite gerar configurações no plano gratuito:
 [instruções oficiais](https://protonvpn.com/support/wireguard-configurations).
 
-**Windows x64:** extraia o ZIP inteiro, encerre o Discord, execute
+**Windows 10 e Windows 11 x64:** extraia o ZIP inteiro, encerre o Discord, execute
 `DiscordStreamTunnel.exe`, escolha ou arraste seu `.conf` para a janela e clique em **Instalar / reaplicar**.
 O programa inclui Python. Depois abra o Discord pelo atalho normal.
+
+O mesmo pacote atende os dois sistemas. Para Windows 10, use o sistema
+atualizado (preferencialmente 22H2), Discord desktop x64 e Vencord atuais.
+O runtime incluído é compatível com Windows 10; não é necessário instalar
+Python ou habilitar modo de compatibilidade. A validação de chamadas reais
+no PC Windows 10 afetado ainda está pendente; os testes automatizados e o
+build local não comprovam estabilidade idêntica em todos os computadores.
 
 O instalador tem tema escuro, ícone próprio e botões **Instalar / reaplicar**,
 **Reparar**, **Verificar** e **Desinstalar**. Reparar restaura o carregador
@@ -40,8 +47,8 @@ existente sem pedir novamente o `.conf`.
 Flatpak e Snap não são cobertos.
 
 ```sh
-tar -xzf DiscordStreamTunnel-1.5.5-linux.tar.gz
-cd DiscordStreamTunnel-1.5.5-linux
+tar -xzf DiscordStreamTunnel-1.5.6-linux.tar.gz
+cd DiscordStreamTunnel-1.5.6-linux
 sh instalar.sh
 ```
 
@@ -52,6 +59,27 @@ com seu usuário normal. Instale Vencord pelas [instruções oficiais](https://v
 No Linux, a interface gráfica é opcional: instale `python3-tk` (Ubuntu) ou
 `tk` (CachyOS/Arch) e execute `python3 source/app.py --gui` dentro da pasta
 extraída. A instalação por terminal continua funcionando sem Tk.
+
+## O que mudou na 1.5.6
+
+- Os dois sockets UDP locais desativam notificações ICMP de reset antes da
+  primeira recepção no Windows. Uma resposta enviada à porta antiga do Discord
+  durante uma reconexão podia interromper a leitura em versões do `asyncio`,
+  deixando a transmissão sem receber mesmo com o auxiliar aberto. A proteção
+  vale para Windows 10 e 11; a verificação de conectividade continua ativa.
+- **Verificar** inclui a versão/build do Windows e a versão do Python no
+  diagnóstico, para distinguir os ambientes sem registrar nome do computador,
+  usuário ou identificadores de hardware.
+- Testes Windows usam sockets reais, uma porta encerrada e tráfego nos dois
+  sentidos para verificar que a recepção continua funcionando após os erros.
+
+Para aplicar, extraia o pacote **1.5.6** completo, feche o Discord, execute o
+instalador e clique em **Reparar**. Reabra o Discord. O `.conf` é preservado.
+Esta correção trata uma falha de transporte identificada; a estabilidade no
+PC Windows 10 afetado ainda precisa ser confirmada com envio e recepção reais.
+O relato de fechamento completo do aplicativo ainda não foi confirmado nem
+atribuído a esta falha. Se a transmissão cair novamente, use **Verificar** e
+envie `data/diagnostico.json` para continuar a investigação.
 
 ## O que mudou na 1.5.5
 
@@ -377,6 +405,10 @@ Para remover, encerre o Discord e use **Desinstalar** no instalador. No Linux,
 execute `python3 ~/.local/share/discord-stream-tunnel/launcher.py uninstall`.
 Abra o Discord uma vez para restaurar a preferência anterior de vídeo.
 O `.conf` original em Downloads permanece onde você o salvou.
+
+Para começar do zero, o [guia de reinstalação limpa](LEIA-ME-PRIMEIRO.html#reinstalacao-limpa)
+explica como remover o addon, Vencord, Discord e os dados locais, na ordem
+correta. Ele acompanha o pacote e também pode ser lido offline.
 
 Dados privados ficam em `%LOCALAPPDATA%/DiscordStreamTunnel/data` no Windows
 ou `$XDG_DATA_HOME/discord-stream-tunnel/data` (padrão `~/.local/share`) no Linux.

@@ -23,7 +23,7 @@
     <p>O programa encaminha o controle Gateway e o compartilhamento de tela do Discord por um túnel Proton WireGuard.
       A voz principal da chamada e os outros aplicativos continuam pela conexão normal.
       Eventos de mensagens e presença do Gateway também usam o túnel; HTTP/CDN e as rotas/DNS do sistema não são alterados.</p>
-    <nav aria-label="Conteúdo"><a href="#preparar">Preparar</a><a href="#windows">Windows</a><a href="#linux">Linux</a><a href="#problemas">Resolver problemas</a><a href="#remover">Remover</a></nav>
+    <nav aria-label="Conteúdo"><a href="#preparar">Preparar</a><a href="#windows">Windows</a><a href="#linux">Linux</a><a href="#problemas">Resolver problemas</a><a href="#remover">Remover</a><a href="#reinstalacao-limpa">Reinstalação limpa</a></nav>
   </header>
   <section id="preparar">
     <h2>1. Antes de começar</h2>
@@ -38,7 +38,8 @@
     <div class="note"><strong>Seu <code>.conf</code> contém uma chave privada.</strong> Não envie esse arquivo, a pasta <code>data</code> ou a pasta instalada a outras pessoas. Cada usuário deve usar a configuração da própria conta.</div>
   </section>
   <section id="windows">
-    <h2>2. Instalar no Windows x64</h2>
+    <h2>2. Instalar no Windows 10 ou 11 x64</h2>
+    <p>Use o mesmo ZIP nos dois sistemas, com Windows atualizado (preferencialmente 22H2 no Windows 10), Discord desktop x64 e Vencord atuais. Python já acompanha o programa. Não é necessário habilitar modo de compatibilidade.</p>
     <div class="note"><strong>Já usa uma versão anterior à 1.4.0?</strong> A chave antiga de atualização foi perdida. Baixe o pacote novo uma vez, feche o Discord e clique em <strong>Reparar</strong> no instalador novo. Sua configuração Proton é preservada e não precisa selecionar o <code>.conf</code> novamente. O atualizador antigo não consegue autenticar esta troca.</div>
     <ol>
       <li>Extraia <strong>todo</strong> o ZIP <code>DiscordStreamTunnel-VERSÃO-Windows-x64.zip</code> para uma pasta. Não execute o programa de dentro do ZIP nem separe o <code>.exe</code> da pasta <code>_internal</code>.</li>
@@ -91,6 +92,30 @@ sudo pacman -S --needed python ca-certificates</code></pre>
     <p>Para remover, encerre o Discord e clique em <strong>Desinstalar</strong>. No Linux:</p>
     <pre><code>python3 ~/.local/share/discord-stream-tunnel/launcher.py uninstall</code></pre>
     <p>Abra o Discord uma vez para restaurar a preferência anterior de vídeo. Seu <code>.conf</code> original permanece na pasta em que você o salvou.</p>
+  </section>
+  <section id="reinstalacao-limpa">
+    <h2>6. Remover tudo e reinstalar no Windows 10/11</h2>
+    <p>Estes passos apagam a instalação e os dados locais do Discord, Vencord e addon no usuário atual do Windows. Você precisará entrar na conta novamente e refazer preferências, plugins e temas. Sua conta, servidores e mensagens armazenados pelo Discord não são excluídos.</p>
+    <div class="note">Antes de começar, guarde seu <strong>arquivo Proton <code>.conf</code> original</strong> em uma pasta privada fora das pastas abaixo, ou prepare-se para gerar outro na própria conta. Ele será necessário na reinstalação. Não o envie ao suporte.</div>
+    <h3>Remover</h3>
+    <ol>
+      <li>Saia do Discord pelo ícone perto do relógio. No Gerenciador de Tarefas (<strong>Ctrl + Shift + Esc</strong>), confirme que não há processos <code>Discord.exe</code> abertos.</li>
+      <li>Abra o instalador do <strong>DiscordStreamTunnel</strong>, clique em <strong>Desinstalar</strong> e aguarde a confirmação. Faça isso enquanto o Vencord ainda está instalado, para remover o carregador e restaurar os atalhos. Depois feche o instalador.</li>
+      <li>Abra o <a href="https://vencord.dev/download/">instalador oficial do Vencord</a>, selecione o mesmo Discord e clique em <strong>Uninstall</strong>.</li>
+      <li>No Windows 10, abra <strong>Configurações → Aplicativos → Aplicativos e recursos</strong>, selecione <strong>Discord</strong> e clique em <strong>Desinstalar</strong>. No Windows 11, use <strong>Aplicativos instalados</strong>.</li>
+      <li>Pressione <strong>Win + R</strong>, digite <code>%APPDATA%</code> e exclua somente as pastas <code>discord</code> e <code>Vencord</code>, se existirem.</li>
+      <li>Pressione <strong>Win + R</strong>, digite <code>%LOCALAPPDATA%</code> e exclua somente as pastas <code>Discord</code> e <code>DiscordStreamTunnel</code>, se existirem. Isso remove também o núcleo de rede, versões antigas, backups, logs, configuração privada importada e cache de atualização do addon.</li>
+      <li>Exclua os ZIPs e pastas extraídas de instaladores antigos que você guardou em Downloads ou na Área de Trabalho. Remova atalhos antigos restantes e desafixe o Discord da barra de tarefas. Reinicie o computador. Se alguma pasta estava em uso, remova-a depois de reiniciar, antes de reinstalar.</li>
+    </ol>
+    <p>Não exclua <code>AppData</code>, <code>Roaming</code> ou <code>Local</code> inteiras. Se usar Discord PTB/Canary, repita a remoção dessas instalações e das respectivas pastas <code>discordptb</code>/<code>discordcanary</code>. Se configurou diretórios personalizados para Vencord ou addon, remova também esses diretórios específicos. A pasta <code>DiscordStreamTunnelPublisher</code> contém material de publicação do desenvolvedor e não faz parte da instalação do usuário.</p>
+    <h3>Reinstalar</h3>
+    <ol>
+      <li>Baixe e instale o <a href="https://discord.com/download">Discord oficial</a>. Entre na conta e teste uma chamada/transmissão sem modificações. Depois feche o Discord por completo.</li>
+      <li>Instale o <a href="https://vencord.dev/download/">Vencord oficial</a> no mesmo Discord. Abra uma vez, confirme que funciona e feche novamente.</li>
+      <li>Baixe o <strong>ZIP Windows x64 da <a href="https://github.com/Yuri-Shark/DiscordStreamTunnel/releases/latest">última versão do addon</a></strong> e extraia tudo. Abra <code>DiscordStreamTunnel.exe</code>, selecione seu <code>.conf</code> e clique em <strong>Instalar / reaplicar</strong>.</li>
+      <li>Abra o Discord pelo atalho novo e teste envio e recepção de tela. Se cair novamente, use <strong>Verificar</strong> logo após o erro e envie somente o <code>diagnostico.json</code> indicado, informando em qual etapa a falha apareceu.</li>
+    </ol>
+    <p>Referências: <a href="https://support.discord.com/hc/en-us/articles/115004307527--Windows-Corrupt-Installation">limpeza de instalação do Discord</a>, <a href="https://support.discord.com/hc/en-us/articles/213491697-What-are-the-OS-system-requirements-for-Discord">sistemas compatíveis com o Discord</a> e <a href="https://docs.python.org/3.14/using/windows.html#supported-windows-versions">compatibilidade do Python incluído</a>.</p>
   </section>
   <footer><p class="muted">Projeto independente de Discord, Vencord, Proton e sing-box. Detalhes técnicos e licenças acompanham o pacote em <code>README.md</code>, <code>SECURITY.md</code> e <code>LICENSE.txt</code>.</p></footer>
 </main></body>

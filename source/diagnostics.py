@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import re
+import sys
 import time
 
 
@@ -64,9 +65,20 @@ def runtime_snapshot(base):
     return result
 
 
+def environment_snapshot():
+    # Build distinguishes Windows 10 from 11: both report major version 10.
+    # Deliberately exclude hostname, username, paths and device identifiers.
+    result={'platform':sys.platform,'python':'.'.join(map(str,sys.version_info[:3]))}
+    if sys.platform=='win32':
+        version=sys.getwindowsversion()
+        result['windows']={'major':version.major,'minor':version.minor,'build':version.build}
+    return result
+
+
 def save_report(base,installation):
     report={name:installation[name] for name in ('version','vencordFound','integrationInstalled','configurationPresent','corePresent') if name in installation}
     report['runtime']=runtime_snapshot(base)
+    report['environment']=environment_snapshot()
     report['playback']=playback_snapshot(base)
     destination=Path(base)/'diagnostico.json'
     destination.parent.mkdir(parents=True,exist_ok=True)

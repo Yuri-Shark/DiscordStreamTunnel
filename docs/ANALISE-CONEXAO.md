@@ -1,4 +1,44 @@
-# Análise de conexão e recuperação — 1.5.5
+# Análise de conexão e recuperação — 1.5.6
+
+## Compatibilidade UDP no Windows 10/11 — 1.5.6
+
+O relato novo confirma queda da transmissão no Windows 10, com suspeita ainda
+não confirmada de fechamento do aplicativo. Sem diagnóstico do PC afetado,
+não há evidência para atribuir o caso a GPU, codec ou versão do Windows.
+
+Foi identificada uma exposição ao [defeito de recepção UDP do CPython](https://github.com/python/cpython/issues/127057):
+um ICMP de porta indisponível pode produzir `ConnectionResetError` e interromper
+a leitura de um transporte Proactor. Os callbacks anteriores apenas contavam
+erros, sem garantir que o `asyncio` voltasse a ler. Reconexões do Discord podem
+fechar a porta UDP local enquanto o relay ainda tenta entregar respostas.
+
+Os dois sockets agora são criados explicitamente e recebem
+`SIO_UDP_CONNRESET=false` e `SIO_UDP_NETRESET=false` antes do primeiro receive,
+conforme as [opções Winsock documentadas pela Microsoft](https://learn.microsoft.com/en-us/windows/win32/winsock/winsock-ioctls).
+Usa-se `WSAIoctl` com `SOCKET` do tamanho de um ponteiro: a API `socket.ioctl`
+do Python não aceita esses comandos em todas as versões suportadas. A mudança
+afeta somente os sockets do addon. Uma falha ao configurar ou criar o endpoint
+fecha o socket; não se inicia uma recepção sem a proteção solicitada.
+
+A descoberta e a verificação periódica do caminho continuam detectando
+indisponibilidade real. Não há repetição de mídia nem troca automática de rota.
+O diagnóstico passa a incluir plataforma, build do Windows e versão do Python;
+não coleta hostname, usuário, identificadores de dispositivos ou dumps.
+
+O teste de regressão usa uma porta loopback encerrada. Um controle positivo
+verifica que o host produz ICMP/WinError 10054; no socket protegido, a mesma
+condição não interrompe recepções posteriores. Outro teste usa o Proactor real
+e alterna envios à porta encerrada com 25 trocas de datagramas de 1.200 bytes
+nos dois sentidos nos mesmos endpoints. Há também cobertura de limpeza em
+falhas de configuração e criação do transporte. Na validação local, os 81 testes
+Python passaram tanto em 3.10.6 quanto em 3.14.8; os dez arquivos de teste
+JavaScript também passaram. O controle sem proteção reproduziu WinError 10054.
+O host desta validação é Windows 11 build 26200, não Windows 10.
+
+Esses testes não comprovam a causa da queda relatada nem equivalência de
+estabilidade entre sistemas. A validação no PC Windows 10 deve incluir envio,
+recepção, reconexão e uso prolongado, com diagnóstico após eventual falha.
+Um fechamento completo do Discord exige investigação separada se confirmado.
 
 ## Reavaliação após o erro 2003 — 1.5.5
 

@@ -1,6 +1,7 @@
 """RFC 1928 UDP association on a loopback authenticated SOCKS5 server."""
 import asyncio
 import ipaddress
+import os
 import socket
 import struct
 
@@ -8,6 +9,20 @@ import struct
 # CPU core. The OS queue is separate from PacketQueue; its default can be only
 # 64 KiB even when our Python queue reports no drops. Keep both queues bounded.
 UDP_BUFFER_BYTES=4*1024*1024
+
+async def create_loopback_endpoint(factory):
+    # Configure the real socket before asyncio starts its first overlapped
+    # receive. TransportSocket doesn't expose ioctl on all Python versions.
+    sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+    try:
+        if os.name=='nt':
+            from windows_udp import suppress_udp_resets
+            suppress_udp_resets(sock)
+        sock.setblocking(False);sock.bind(('127.0.0.1',0))
+        return await asyncio.get_running_loop().create_datagram_endpoint(factory,sock=sock)
+    except BaseException:
+        sock.close();raise
+
 
 def configure_datagram_socket(transport):
     sock=transport.get_extra_info('socket')
@@ -55,7 +70,7 @@ class SocksUDP:
             if not 1<=len(user)<=255 or not 1<=len(secret)<=255: raise ValueError('SOCKS credentials length')
             writer.write(b'\1'+bytes([len(user)])+user+bytes([len(secret)])+secret);await writer.drain()
             if await reader.readexactly(2)!=b'\1\0': raise ConnectionError('SOCKS authentication failed')
-            transport,protocol=await asyncio.get_running_loop().create_datagram_endpoint(PacketQueue,local_addr=('127.0.0.1',0))
+            transport,protocol=await create_loopback_endpoint(PacketQueue)
             writer.write(b'\5\3\0\1'+socket.inet_aton('127.0.0.1')+struct.pack('!H',transport.get_extra_info('sockname')[1]));await writer.drain()
             head=await reader.readexactly(4)
             if head[:3]!=b'\5\0\0': raise ConnectionError('SOCKS UDP association refused')

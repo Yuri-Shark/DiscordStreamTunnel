@@ -22,7 +22,7 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed,ProxyError
 
 from configuration import BASE,CORE,local_settings
-from socks_udp import SocksUDP,configure_datagram_socket
+from socks_udp import SocksUDP,configure_datagram_socket,create_loopback_endpoint
 
 HOST=re.compile(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.discord\.media\Z')
 GATEWAY_HOST=re.compile(r'gateway(?:-[a-z0-9]+)*\.discord\.gg\Z')
@@ -195,7 +195,7 @@ class MediaBridge:
         bridge=cls(socks,target,stats)
         bridge.startup_timeout=settings.get('mediaStartupSeconds',8)
         try:
-            await asyncio.get_running_loop().create_datagram_endpoint(lambda:LocalDatagrams(bridge),local_addr=('127.0.0.1',0))
+            await create_loopback_endpoint(lambda:LocalDatagrams(bridge))
             bridge.tasks=[asyncio.create_task(bridge.outbound()),asyncio.create_task(bridge.inbound()),
                           asyncio.create_task(socks.watch_control()),asyncio.create_task(bridge.discover())]
             return bridge
