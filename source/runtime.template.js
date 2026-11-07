@@ -25,6 +25,9 @@
   if (!store) throw new Error('Stream connection store unavailable');
   const wrapped = new Map();
   const watchedRoots = new Map();
+  const playback = new Map();
+  let playbackTimer = null, playbackDispatcher = null, lastPlaybackRecovery = -Infinity;
+  const recovery = {attempts:0, lastReason:null};
   let enabled = true, automatic = false, constructions = 0, lastError = null;
   let videoGuard = 'waiting', guardAttempts = 0;
   function applyVideoGuard() {
@@ -178,6 +181,7 @@
     if (!enabled) return;
     try {
       const roots = Object.values(store.getRTCConnections());
+      for (const root of playback.keys()) if (!roots.includes(root)) playback.delete(root);
       for (const [root, record] of watchedRoots) if (!roots.includes(root)) unwatchRoot(root, record);
       for (const root of roots) watchRoot(root);
       const activeSockets = new Set(roots.map(x => x._socket));
@@ -197,11 +201,11 @@
           catch (error) { startup = Promise.reject(error); }
           Promise.resolve(startup).then(() => {
             record.ready = true; record.starting = false;record.retries=0;record.retryAt=0;lastError=null;
-            if(record.pendingFactory){const pending=record.pendingFactory;record.pendingFactory=null;if(enabled&&automatic&&wrapped.get(socket)===record&&root._socket===socket){try{record.open.apply(pending.self,pending.args);}catch(error){lastError=error?.name??'SocketFactoryError';}}}
+            if(record.pendingFactory){const pending=record.pendingFactory;record.pendingFactory=null;if(enabled&&automatic&&wrapped.get(socket)===record&&root._socket===socket&&socket.connectionState!==0){try{record.open.apply(pending.self,pending.args);}catch(error){lastError=error?.name??'SocketFactoryError';}}}
             if (enabled && automatic) scan();
           }).catch(() => {record.starting = false;lastError='HelperUnavailable';record.retryAt=Date.now()+Math.min(5000,250*2**record.retries++);if(enabled&&automatic)setTimeout(scan,Math.max(0,record.retryAt-Date.now()));});
         }
-        if (automatic && record && record.ready && !record.renewed && !root.isStreamSender() && root.state === 'RTC_CONNECTED' && !socket.webSocket?.url?.startsWith(base)) {
+        if (automatic && record && record.ready && !record.renewed && root.state === 'RTC_CONNECTED' && !socket.webSocket?.url?.startsWith(base)) {
           record.renewed = true;
           setTimeout(() => {
             if (enabled && automatic && Object.values(store.getRTCConnections()).includes(root) && root._socket === socket) root.reconnect();
@@ -210,10 +214,122 @@
       }
     } catch (error) { lastError = error?.name ?? 'RuntimeError'; }
   }
+  function playbackRecord(root) {
+    let record = playback.get(root);
+    if (!record) {
+      record = {connection:null, previous:null, stalledSince:null, attempts:[], nextRetry:0, pending:false, timeoutPending:false, sample:null};
+      playback.set(root,record);
+    }
+    return record;
+  }
+  function currentReceiver(root) {
+    return enabled && automatic && root.context === 'stream' && !root.isStreamSender()
+      && Object.values(store.getRTCConnections()).includes(root)
+      && videoRequested(root)
+      && !!root._socket?.webSocket?.url?.startsWith(base+'?');
+  }
+  function videoRequested(root) {
+    const quality=root._goLiveQualityManager;
+    if (quality?.incomingVideoEnabled === false || quality?.videoStream?.active === false) return false;
+    // Discord can keep sinkWant=100 while requesting pixelCounts=0 for a
+    // hidden tile. That is an intentional pause, not a first-frame failure.
+    if (numeric(quality?.resolutionWidth) && numeric(quality?.resolutionHeight)) {
+      return quality.resolutionWidth>0 && quality.resolutionHeight>0;
+    }
+    return true; // Older clients expose only the per-SSRC sinkWant counters.
+  }
+  function recoverPlayback(root, reason) {
+    if (!currentReceiver(root) || typeof root.reconnect !== 'function') return;
+    const record = playbackRecord(root), now = Date.now();
+    record.attempts = record.attempts.filter(at => now-at < 300000);
+    // A server/encoder outage must not create a reconnect storm across screens.
+    if (now < record.nextRetry || now-lastPlaybackRecovery < 5000 || record.attempts.length >= 2) return;
+    record.attempts.push(now);record.nextRetry=now+30000;lastPlaybackRecovery=now;
+    record.stalledSince=null;record.previous=null;record.timeoutPending=false;
+    recovery.attempts++;recovery.lastReason=reason;
+    try {root.reconnect();} catch {lastError='PlaybackReconnectFailed';}
+    // Keep Discord's timeout/error visible until its native first-frame event
+    // resolves it. Never clear an error merely because reconnect was requested.
+  }
+  function onVideoTimeout(event) {
+    if (event?.mediaContext !== 'stream') return;
+    for (const [streamKey,root] of Object.entries(store.getRTCConnections())) {
+      if (event.streamKey != null ? event.streamKey === streamKey
+        : event.userId != null && event.userId === root._goLiveQualityManager?.userId) {
+        // Flux can still be dispatching; reconnect on the next event-loop turn.
+        setTimeout(() => {if(currentReceiver(root)){playbackRecord(root).timeoutPending=true;recoverPlayback(root,'first-frame-timeout');}},0);
+      }
+    }
+  }
+  function startPlaybackMonitor() {
+    if (!enabled || !automatic) return;
+    if (!playbackDispatcher) {
+      try {
+        const usable = value => value && typeof value.subscribe === 'function' && typeof value.unsubscribe === 'function';
+        const dispatcher = usable(W.Common?.FluxDispatcher) ? W.Common.FluxDispatcher : loaded(usable);
+        if (dispatcher) {dispatcher.subscribe('VIDEO_STREAM_READY_TIMEOUT',onVideoTimeout);playbackDispatcher=dispatcher;}
+      } catch {}
+    }
+    if (playbackTimer === null && typeof setInterval === 'function') {
+      playbackTimer=setInterval(samplePlayback,5000);playbackTimer?.unref?.();
+    }
+  }
+  const numeric = value => typeof value === 'number' && Number.isFinite(value) && value >= 0;
+  async function samplePlayback() {
+    if (!enabled || !automatic) return;
+    startPlaybackMonitor();
+    const roots=Object.values(store.getRTCConnections()).filter(root => root.context === 'stream');
+    for (const root of playback.keys()) if (!roots.includes(root)) playback.delete(root);
+    await Promise.all(roots.map(async root => {
+      const record=playbackRecord(root), connection=root._connection;
+      if (record.pending) return;
+      if (record.connection !== connection || root.state !== 'RTC_CONNECTED') {
+        record.connection=connection;record.previous=null;record.stalledSince=null;record.sample=null;
+      }
+      if (!connection || root.state !== 'RTC_CONNECTED' || typeof connection.getStats !== 'function') return;
+      record.pending=true;
+      try {
+        const stats=await connection.getStats();
+        if (!enabled || !automatic || root.state !== 'RTC_CONNECTED' || root._connection !== connection || !roots.includes(root)
+          || !Object.values(store.getRTCConnections()).includes(root)) return;
+        const sender=root.isStreamSender();
+        const entries=sender ? stats?.rtp?.outbound : Object.values(stats?.rtp?.inbound || {}).flat();
+        if (!Array.isArray(entries)) return;
+        const videos=entries.filter(row => row?.type === 'video');
+        const selected=sender ? videos : videoRequested(root)
+          ? videos.filter(row => numeric(row.sinkWantLocalAsInt) && row.sinkWantLocalAsInt > 0) : [];
+        const sum=name => selected.reduce((total,row) => total+(numeric(row[name])?row[name]:0),0);
+        const sample={sender,requested:selected.length>0,frames:sum(sender?'framesEncoded':'framesDecoded'),
+          packets:sum(sender?'packetsSent':'packetsReceived'),packetsLost:sum('packetsLost'),
+          decodeErrors:sum('framesDecodeErrors'),decryptFailures:sum(sender?'encryptFailureCount':'decryptFailureCount')};
+        record.sample=sample;
+        const previous=record.previous, now=Date.now();record.previous=sample;
+        if (previous && sample.frames > previous.frames) record.timeoutPending=false;
+        if (record.timeoutPending) recoverPlayback(root,'first-frame-timeout');
+        const comparable=!sender && selected.length>0 && selected.every(row => numeric(row.framesDecoded) && numeric(row.packetsReceived));
+        // Static/paused video and unrequested simulcast layers are healthy.
+        // Only continuous incoming VIDEO without decoded progress is evidence.
+        if (!comparable || !previous?.requested || sample.frames !== previous.frames || sample.packets <= previous.packets) {
+          record.stalledSince=null;return;
+        }
+        record.stalledSince ??= now;
+        if (now-record.stalledSince >= 20000) recoverPlayback(root,'video-decode-stalled');
+      } catch {record.previous=null;record.stalledSince=null;}
+      finally {record.pending=false;}
+    }));
+    try {window.DiscordProtonStreamsNative?.reportPlayback?.(playbackStatus());} catch {}
+  }
+  function playbackStatus() {
+    return {...recovery,streams:[...playback.entries()].map(([root,record]) => ({
+      state:['RTC_CONNECTED','RTC_CONNECTING','RTC_DISCONNECTED','NO_ROUTE','AWAITING_ENDPOINT'].includes(root.state)?root.state:'OTHER',
+      ...(record.sample || {sender:root.isStreamSender(),requested:false}),recoveryAttempts:record.attempts.length
+    }))};
+  }
   function status() {
     const roots = Object.values(store.getRTCConnections()).filter(x => x.context === 'stream');
     return {enabled, automatic, constructions, wrappedSockets: wrapped.size, lastError, videoGuard,
       gateway:gatewayStatus(),
+      playback:playbackStatus(),
       streams: roots.map(x => ({state: x.state, sender: x.isStreamSender(), throughRelay: !!x._socket?.webSocket?.url?.startsWith(base)})),
       scope: 'Controle Gateway e compartilhamento de tela pelo tunel; audio principal e demais aplicativos permanecem diretos.'};
   }
@@ -232,6 +348,9 @@
   function remove(options = {}) {
     enabled = false; automatic = false; store.removeChangeListener(scan);
     if (gatewayTimer !== null) window.clearTimeout?.(gatewayTimer);
+    if (playbackTimer !== null) window.clearInterval?.(playbackTimer);
+    try {playbackDispatcher?.unsubscribe('VIDEO_STREAM_READY_TIMEOUT',onVideoTimeout);} catch {}
+    playback.clear();
     if (gatewayReplacement && window.WebSocket === gatewayReplacement) window.WebSocket = gatewayOriginal;
     for (const [socket, record] of wrapped) if (socket.createWebSocket === record.replacement) socket.createWebSocket = record.original;
     for (const [root, record] of watchedRoots) unwatchRoot(root, record);
@@ -242,6 +361,6 @@
     return {removed: true};
   }
   store.addChangeListener(scan);
-  window[key] = {status, testarRecepcaoAtual: testReceivers, automatico(value = true) {automatic = !!value; if(automatic)startGateway();scan(); return status();}, remover: remove};
+  window[key] = {status, testarRecepcaoAtual: testReceivers, automatico(value = true) {automatic = !!value; if(automatic){startGateway();startPlaybackMonitor();}scan(); return status();}, remover: remove};
   applyVideoGuard(); scan(); return status();
 })()

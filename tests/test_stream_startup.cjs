@@ -74,17 +74,37 @@ async function failureRecovery() {
   ctx.__discordProtonStreams.remover();
 }
 
-async function removedWhileStarting() {
+async function removedWhileStarting(cancelNativeOnly=false) {
   const calls=[],listeners=new Set();let release;
   class NativeSocket {constructor(url){calls.push(url);}}
   const ctx=vm.createContext({WebSocket:NativeSocket,URL,URLSearchParams,Proxy,Reflect,crypto,setTimeout,
     DiscordProtonStreamsNative:{ensureHelper:()=>new Promise(resolve=>{release=resolve;})}});ctx.window=ctx;
-  const root={context:'stream',state:'CONNECTING',isStreamSender:()=>false,_socket:{url:'wss://test-sfu.discord.media/',
+  const root={context:'stream',state:'CONNECTING',isStreamSender:()=>false,_socket:{connectionState:1,url:'wss://test-sfu.discord.media/',
     createWebSocket(){return new ctx.WebSocket(this.url+'?v=10');}}};
   ctx.Vencord={Webpack:{findStore:()=>({getRTCConnections:()=>({root}),addChangeListener:fn=>listeners.add(fn),removeChangeListener:fn=>listeners.delete(fn)})}};
   vm.runInContext(source,ctx);ctx.__discordProtonStreams.automatico(true);root._socket.createWebSocket();
-  ctx.__discordProtonStreams.remover();release();await new Promise(resolve=>setImmediate(resolve));
+  if(cancelNativeOnly)root._socket.connectionState=0;
+  else ctx.__discordProtonStreams.remover();
+  release();await new Promise(resolve=>setImmediate(resolve));
+  if(cancelNativeOnly)ctx.__discordProtonStreams.remover();
   assert.equal(calls.length,0,'unloading while starting must not open an orphan stream');assert.equal(listeners.size,0);
+}
+
+async function senderConnectedBeforeStoreNotification(){
+  const listeners=new Set();let reconnects=0;
+  class NativeSocket{constructor(url){this.url=url;}}
+  const ctx=vm.createContext({WebSocket:NativeSocket,URL,URLSearchParams,Proxy,Reflect,crypto,setTimeout,
+    DiscordProtonStreamsNative:{ensureHelper:async()=>{}}});ctx.window=ctx;
+  const socket={connectionState:2,url:'wss://test-sfu.discord.media/',webSocket:{url:'wss://test-sfu.discord.media/?v=10'},
+    createWebSocket(){this.webSocket=new ctx.WebSocket(this.url+'?v=10');}};
+  const root={context:'stream',state:'RTC_CONNECTED',isStreamSender:()=>true,_socket:socket,reconnect(){reconnects++;socket.createWebSocket();}};
+  ctx.Vencord={Webpack:{findStore:()=>({getRTCConnections:()=>({root}),addChangeListener:f=>listeners.add(f),removeChangeListener:f=>listeners.delete(f)})}};
+  vm.runInContext(source,ctx);ctx.__discordProtonStreams.automatico(true);
+  await new Promise(r=>setTimeout(r,25));
+  assert.equal(reconnects,1,'a sender already connected before the store event must migrate once');
+  assert.equal(new URL(socket.webSocket.url).origin,'ws://127.0.0.1:19884');
+  for(const listener of listeners)listener();await new Promise(r=>setTimeout(r,10));
+  assert.equal(reconnects,1,'healthy sender must not be reconnected again');ctx.__discordProtonStreams.remover();
 }
 
 (async () => {
@@ -92,5 +112,7 @@ async function removedWhileStarting() {
   await firstConnection(false);
   await failureRecovery();
   await removedWhileStarting();
+  await removedWhileStarting(true);
+  await senderConnectedBeforeStoreNotification();
   console.log('OK: sender/receiver startup and reconnections revalidate the helper; voice and cleanup preserved.');
 })().catch(error => {console.error(error); process.exitCode = 1;});

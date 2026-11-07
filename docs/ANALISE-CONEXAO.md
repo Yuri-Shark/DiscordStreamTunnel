@@ -1,4 +1,175 @@
-# Análise de conexão e recuperação — 1.5.0
+# Análise de conexão e recuperação — 1.5.5
+
+## Reavaliação após o erro 2003 — 1.5.5
+
+A observação posterior confirmou perdas RTP e congelamentos. Portanto,
+a validação anterior não eliminou o problema relatado. O código 2003 indica
+perda de pacotes, conforme a documentação oficial do Discord citada abaixo.
+Os contadores de filas do relay e o contador UDP de recepção do Windows
+continuaram sem descartes; isso não localiza a perda em outro componente.
+
+Foi encontrado um falso positivo do monitor: o gerenciador nativo pode manter
+`sinkWantLocalAsInt=100` enquanto pede `pixelCounts=0` para uma tela oculta.
+Reconectar essa tela por ausência de quadros gera carregamento desnecessário.
+Agora largura/altura zero, vídeo desativado e camada inativa impedem a
+recuperação, inclusive por timeout do primeiro quadro. O monitor retoma quando
+a tela volta a solicitar pixels. Testes reproduzem esses estados e a retomada.
+O ajuste foi aplicado ao renderer em execução sem reiniciar o Discord.
+
+Um teste temporário de uma recepção pela rota direta não produziu vídeo
+utilizável, mesmo solicitando 1280×720. A rota Proton foi restaurada e voltou
+a produzir quadros. Em aproximadamente 20 segundos pelo Proton, os quadros
+avançaram de 51 para 423, mas houve uma pausa intermediária com 446 pacotes
+perdidos adicionais. Não há evidência para oferecer desvio direto automático
+como solução. A demanda de vídeo alterada no teste foi restaurada.
+
+Na janela seguinte de 90 segundos, com três recepções e o envio próprio
+ativos, não houve reconexão pelo monitor e as perdas adicionais das recepções
+foram de 13,5%, 21,0% e 21,3%. Houve intervalos de cinco segundos sem avanço
+de quadros nas três. O encoder local avançou 2.700 quadros nesse período,
+mas o usuário confirmou travamentos também para seus espectadores. Logo,
+30 FPS codificados localmente não demonstram entrega fluida no destino.
+O contador de perdas do envio diminuiu nessa amostra; ele não deve ser
+interpretado como contador monotônico nem como uma taxa negativa de perda.
+
+Uma sondagem serial pelo SOCKS/WireGuard existente obteve 40 respostas DNS,
+todas com até 1.187 bytes, sem timeout. Ela não testa rajadas de vídeo nem
+respostas maiores que o MTU, portanto não descarta congestionamento ou
+fragmentação. A captura por PktMon não estava disponível sem elevação nesta
+sessão. Não foi alterado o sistema para obter essa captura.
+
+A perda restante continua sob investigação. Esta revisão corrige uma falha
+reproduzida no monitor; não comprova a eliminação dos erros 2003, 2007 ou 2012.
+Uma comparação com outro servidor Proton foi solicitada para discriminar o
+caminho de rede sem atribuir a perda a um salto específico sem evidência.
+O usuário informou não ter outro perfil disponível nesta sessão.
+
+Também foi comparado temporariamente o transporte local UDP com UoT v2
+(TCP somente no loopback), aproveitando o mesmo núcleo e o mesmo WireGuard.
+Sondagens DNS paralelas tiveram resultados variáveis; no ensaio misto, ambos
+os transportes receberam quase todas as respostas. Na recepção real, o trecho
+com UoT acumulou 489 perdas para 1.584 recebidos adicionais em 65 segundos
+(23,6%). A rota UDP original foi restaurada. A mudança não eliminou as perdas
+e não foi incorporada ao produto. O WireGuard externo permaneceu UDP durante
+todo o teste; nenhum segundo núcleo ou interface de VPN foi iniciado.
+
+O próximo comparativo exige outro perfil/servidor, outra rede, ou uma captura
+de pacotes que permita localizar o descarte. Um perfil alternativo pode ser
+gerado na área de downloads da conta, conforme o
+[guia oficial do Proton](https://protonvpn.com/support/wireguard-configurations).
+
+## Revisão de 06/11/2026 — perda de pacotes e quadros sem progresso
+
+Foram observadas duas recepções e a própria transmissão no Discord desktop,
+com a 1.5.1 e Gateway/mídia pelo relay. Na amostra inicial, as recepções
+acumulavam 14.705 pacotes perdidos para 115.920 recebidos e 42.044 perdidos
+para 112.351 recebidos (aproximadamente 11% e 27% do total esperado).
+Ambas chegaram a informar 0 FPS de decodificação, sem erros de decoder
+contabilizados. Logs WebRTC registraram NACKs e pedidos de keyframe após
+três segundos sem quadro decodificável. Isso confirma degradação real;
+não localiza a perda na operadora, no Proton, no SFU ou no transmissor.
+
+Uma amostra posterior de cerca de 20 segundos mediu, nas duas recepções,
+926 recebidos/317 perdidos e 2.901 recebidos/1.394 perdidos adicionais.
+Os quadros voltavam a avançar entre interrupções. O envio próprio também
+apresentou avanço de quadros codificados e pedidos de retransmissão.
+Avanço do encoder local não comprova a imagem recebida por outra pessoa.
+Os contadores agregados do Tunnel permaneciam sem descarte de fila; o
+contador UDP global do Windows também não registrava erro de recepção.
+Portanto, não foi atribuída toda a perda a buffers locais.
+
+A revisão corrige um defeito reproduzível no controle: o fechamento pedido
+pelo cliente não era repassado ao upstream de mídia, cujo contexto terminava
+com 1000. O teste usa WebSockets reais e verifica 4000, 4006 e 1001 nos dois
+lados; preservar o código evita transformar uma reconexão em saída normal.
+Uma segunda regressão mantém o contexto upstream antigo preso em cleanup
+enquanto o cliente abre sua substituição com o mesmo SID. A validação anterior
+recusava a conexão com HTTP 409. Agora ela aguarda até dois segundos pelo evento
+de término, revalida os limites e preserva a ponte de uma retomada válida.
+Não encerra um controle saudável só porque outro pediu o mesmo SID.
+
+Os sockets loopback solicitam buffers de 4 MiB e as bombas UDP cedem execução
+a cada 64 pacotes. As filas Python continuam limitadas. Erros assíncronos dos
+sockets são contados. Um teste envia 400 datagramas de 1.200 bytes sem pausa,
+verifica integridade e ordem e exige ausência de perda nas filas. Essa proteção
+trata rajadas locais; não é evidência de que o buffer causou a perda ao vivo.
+
+A recuperação no renderer usa `connection.getStats()` do próprio Discord.
+Somente vídeo de recepção solicitado (`sinkWantLocalAsInt > 0`), com contadores
+válidos, pacotes continuamente avançando e nenhum quadro decodificado novo por
+20 segundos pede `root.reconnect()`. Pausas de tráfego, vídeo estático, baixa
+taxa de quadros que ainda avança, camadas não solicitadas e estatísticas
+ausentes interrompem a contagem. O evento nativo `VIDEO_STREAM_READY_TIMEOUT`
+também permite uma nova tentativa. Eventos simultâneos são espaçados.
+
+Há no máximo duas tentativas por recepção em cinco minutos, com intervalo de
+30 segundos e espaçamento global de cinco segundos. A voz e o envio próprio
+não são reiniciados por esse monitor. O erro nativo não é apagado por uma
+tentativa; somente o Discord resolve sua condição. Remoção do addon limpa
+timer/listener, e estatísticas atrasadas não reabrem uma tela já fechada.
+
+O preload grava apenas contadores e estados permitidos em `playback-status.json`,
+no máximo a cada dez segundos. O relatório final repete a filtragem e indica
+quando a amostra está desatualizada. Identificadores de participantes/SSRC,
+endereços, URLs, tokens, chaves e conteúdo nunca são exportados.
+
+O 2002 da imagem indica baixa taxa de quadros; 2007 indica reconexão e 2012,
+timeout do espectador, conforme a [documentação oficial do Discord](https://support.discord.com/hc/en-us/articles/30952914470807-Discord-Audio-and-Video-Error-Codes-Troubleshooting-Guide).
+2020 não aparece nessa tabela nem no registro de erros de áudio/vídeo do bundle
+web público consultado nesta revisão. Não foi inventado um significado para
+ele nem aplicado um tratamento específico sem evidência.
+
+No reinício autorizado para validar a 1.5.2, o núcleo anterior permaneceu
+aberto depois da saída de seu auxiliar, ocupando a porta SOCKS. O executável,
+PID pai já encerrado e porta foram verificados antes de encerrar esse órfão.
+A 1.5.3 associa apenas o núcleo que inicia a um Job Object anônimo, privado e
+não herdável com `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. O kernel o encerra mesmo
+se o auxiliar morrer sem executar seus blocos de limpeza, conforme o mecanismo
+[documentado pela Microsoft](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects).
+Testes Windows reais confirmam a morte do filho após `os._exit` do proprietário
+e preservam um processo não associado. A confirmação de startup também exige
+que o processo recém-criado continue vivo após a primeira resposta do proxy.
+
+Após o reinício da 1.5.2 e a limpeza do núcleo antigo, foram observadas três
+recepções e um envio em `RTC_CONNECTED`, sem erro/descarte nas filas do relay.
+Uma recepção estava sem perda acumulada; outras ainda apresentavam perda.
+Essa observação não é uma comparação controlada com a amostra anterior e não
+comprova eliminação das perdas externas.
+
+A amostra final da 1.5.3 mostrou quatro recepções em `RTC_CONNECTED` enquanto
+o envio próprio estava sem conexão. O relay tinha quatro controles ativos:
+seu limite anterior incluía envio e recepção juntos, portanto recusava a quinta
+sessão. A 1.5.4 aumenta para oito controles ativos e 16 sessões temporárias,
+mantendo autenticação, destinos restritos e reutilização das inativas. Um teste
+real abre oito WebSockets de mídia, exige sucesso para a quinta conexão e
+rejeição da nona. Esse ajuste remove o bloqueio local de capacidade; não
+altera os limites de espectadores impostos pelo servidor Discord.
+
+O envio também foi observado em `RTC_CONNECTED` com socket direto, apesar de
+as recepções usarem o relay. A criação/conexão da raiz pode ocorrer antes da
+notificação do store; a interceptação da propriedade `_socket` não alcança
+essa criação anterior. A migração única de uma sessão já conectada passa a
+incluir o envio. Um teste reproduz a raiz de envio já conectada antes de
+carregar a integração, exige uma migração e nenhuma reconexão nas notificações
+seguintes. O ajuste do renderer foi aplicado à sessão corrente para permitir
+validá-lo sem outro reinício completo do aplicativo.
+
+Na validação final da 1.5.4, duas recepções avançaram de cerca de 450 para
+mais de 4.500 quadros e mantiveram aproximadamente 30 FPS, sem perda de
+pacotes contabilizada nesse período. Uma terceira recepção conectou e respondeu
+à descoberta UDP, mas permaneceu sem pacotes de vídeo; o timeout acionou a
+recuperação automática. Isso não comprova que a origem esteja enviando vídeo.
+O envio próprio passou de socket direto para relay e continuou conectado,
+mas a última amostra tinha zero quadros codificados; entrega a um espectador
+remoto não foi confirmada. O envio com quadros codificados havia sido observado
+nas amostras anteriores, antes desse último teste. Não se conclui eliminação
+de todas as falhas de captura, de origem, de rede ou do Discord.
+
+Validação automatizada final: 76 testes Python aprovados em Python 3.10 e
+3.14.8 no Windows, todos os scripts de teste JavaScript aprovados, build
+PyInstaller concluído e manifestos canônico/compatível assinados e verificados.
+O processo de núcleo da 1.5.3 encerrou automaticamente no reinício seguinte,
+validando também o ciclo de vida real do Job Object nesta instalação.
 
 ## Diagnóstico ao vivo posterior — 1.5.0
 

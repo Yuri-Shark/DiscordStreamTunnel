@@ -220,13 +220,13 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_reclaim_inactive_sessions_when_switching_streams_quickly(self):
         relay=self.relay()
-        for index in range(8):
+        for index in range(16):
             session=StreamSession(TARGET);session.closed_at=index;session.media=SimpleNamespace(close=AsyncMock())
             relay.sessions[f'{index:032x}']=session
         oldest=relay.sessions['0'*32].media
         request=SimpleNamespace(headers={'Origin':'https://discord.com'},path='/relay?'+urlencode({'nonce':'synthetic','target':TARGET,'sid':'f'*32}))
         response=await relay.validate(SimpleNamespace(respond=lambda *args:args),request)
-        self.assertIsNone(response);self.assertEqual(len(relay.sessions),7);oldest.close.assert_awaited_once()
+        self.assertIsNone(response);self.assertEqual(len(relay.sessions),15);oldest.close.assert_awaited_once()
         await relay.close()
 
 

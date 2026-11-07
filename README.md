@@ -40,8 +40,8 @@ existente sem pedir novamente o `.conf`.
 Flatpak e Snap não são cobertos.
 
 ```sh
-tar -xzf DiscordStreamTunnel-1.5.1-linux.tar.gz
-cd DiscordStreamTunnel-1.5.1-linux
+tar -xzf DiscordStreamTunnel-1.5.5-linux.tar.gz
+cd DiscordStreamTunnel-1.5.5-linux
 sh instalar.sh
 ```
 
@@ -52,6 +52,60 @@ com seu usuário normal. Instale Vencord pelas [instruções oficiais](https://v
 No Linux, a interface gráfica é opcional: instale `python3-tk` (Ubuntu) ou
 `tk` (CachyOS/Arch) e execute `python3 source/app.py --gui` dentro da pasta
 extraída. A instalação por terminal continua funcionando sem Tk.
+
+## O que mudou na 1.5.5
+
+Inclui as correções de transporte, reprodução e ciclo de vida das revisões
+locais 1.5.2/1.5.3, o limite de sessões da 1.5.4 e a correção de recuperação
+de telas ocultas identificada na validação ao vivo.
+
+- Uma tela oculta, com largura/altura solicitadas iguais a zero, vídeo
+  desativado ou camada inativa, não dispara recuperação. O Discord pode
+  manter `sinkWantLocalAsInt=100` mesmo pedindo zero pixels. Considerar apenas
+  esse contador provocava reconexões de telas intencionalmente pausadas.
+  O monitor volta a agir quando a tela solicita vídeo novamente.
+
+- O relay permite oito sessões de mídia ativas, incluindo seu envio e as
+  recepções. O limite anterior de quatro no total impedia transmitir a própria
+  tela enquanto quatro recepções estavam abertas. Até 16 sessões temporárias
+  preservam espaço para retomadas, com reaproveitamento das inativas.
+- Um envio que já conectou antes do evento do store também migra para o relay
+  uma vez. Isso fecha a janela em que o socket podia permanecer direto por ter
+  sido criado antes de a integração observar a nova transmissão.
+
+- A recepção observa os contadores nativos de pacotes de vídeo e quadros
+  decodificados. Vídeo solicitado que continua recebendo pacotes sem avançar
+  quadros por 20 segundos solicita uma nova sessão ao Discord. O timeout
+  nativo do primeiro quadro também permite recuperação sem sair e entrar.
+- A recuperação afeta somente a recepção com falha: no máximo duas tentativas
+  por cinco minutos, intervalo mínimo de 30 segundos por tela e cinco segundos
+  entre telas. Vídeo estático, pausado, camadas não solicitadas e baixa taxa de
+  quadros que ainda avança não provocam reconexão. Os avisos nativos continuam
+  visíveis até o Discord resolver a condição.
+- Os dois sockets UDP locais solicitam buffers de 4 MiB ao sistema. As filas
+  continuam limitadas, e rajadas de mídia cedem execução a outras transmissões
+  e aos heartbeats. Isso reduz descartes locais durante rajadas de keyframes;
+  o sistema pode limitar o tamanho efetivamente concedido.
+- O controle de mídia preserva o código de fechamento solicitado pelo cliente
+  também no sentido de subida. Antes, a saída do contexto podia substituí-lo
+  por 1000 e prejudicar uma retomada solicitada com 4000.
+- Uma conexão de substituição aguarda até dois segundos pelo encerramento do
+  controle anterior da mesma sessão. Isso evita recusar uma reconexão legítima
+  com HTTP 409 enquanto o upstream antigo ainda está liberando seus recursos.
+- No Windows, o núcleo iniciado pelo auxiliar pertence a um Job Object privado.
+  O Windows encerra esse núcleo se o auxiliar morrer abruptamente. Um processo
+  novo que falha ao iniciar não aceita como saudável a porta de um proxy antigo.
+- O diagnóstico inclui contadores por ponte, erros dos sockets e estatísticas
+  filtradas de reprodução/envio em `data/playback-status.json`. Nenhum endereço,
+  identificador de participante, token, chave ou conteúdo é incluído.
+
+Instalação local e pacotes desta revisão precisam de uma abertura completa do
+Discord para carregar o auxiliar e o preload novos. Não há reinício forçado.
+Perdas no servidor, no Proton, na rede do transmissor ou problemas de captura
+continuam possíveis; recuperação automática não garante eliminá-los.
+Na validação ao vivo desta revisão, o erro 2003 ainda foi reproduzido, com
+13,5% a 21,3% de perda em uma janela de 90 segundos. A 1.5.5 corrige as falhas
+locais descritas acima; a causa das perdas restantes ainda não foi localizada.
 
 ## O que mudou na 1.5.1
 
@@ -334,6 +388,7 @@ público não contêm configurações de conta, tokens, cookies ou chaves privad
 ```sh
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=source:source/vendor python3 -m unittest discover -s tests -p 'test_*.py' -v
 node tests/test_runtime.cjs
+node tests/test_playback_recovery.cjs
 node tests/test_gateway.cjs
 node tests/test_stream_startup.cjs
 node tests/test_native.cjs

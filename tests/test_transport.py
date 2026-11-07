@@ -16,11 +16,11 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import InvalidStatus,ConnectionClosed
 
 from configuration import make_core_config
-from socks_udp import SocksUDP,PacketQueue,pack_packet,unpack_packet
+from socks_udp import SocksUDP,PacketQueue,pack_packet,unpack_packet,configure_datagram_socket
 from stream_relay import MediaBridge,Relay,StreamSession,ready_target,sfu_target,request_details,valid_target
 
 class DatagramEcho(asyncio.DatagramProtocol):
-    def connection_made(self,transport): self.transport=transport
+    def connection_made(self,transport): self.transport=transport;configure_datagram_socket(transport)
     def datagram_received(self,data,addr): self.transport.sendto(data,addr)
 
 class FakeCore:
@@ -36,6 +36,7 @@ class FakeUpstream:
     def __aiter__(self): return self
     async def __anext__(self): return await self.queue.get()
     async def send(self,value): self.received.append(value)
+    async def close(self,code=1000):self.close_code=code
 
 class FakeMedia:
     local_port=54321
@@ -43,6 +44,108 @@ class FakeMedia:
     async def close(self): self.closed=True
 
 class TransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_sending_while_watching_four_streams_and_capacity_bound(self):
+        @asynccontextmanager
+        async def connector(target,**options):yield FakeUpstream(['ready'])
+        relay=Relay({'nonce':'synthetic','socksPort':19885,'idleSeconds':40},core=FakeCore(),connector=connector)
+        clients=[]
+        try:
+            async with serve(relay.handle,'127.0.0.1',0,process_request=relay.validate) as local:
+                def url(index):return 'ws://127.0.0.1:'+str(local.sockets[0].getsockname()[1])+'/relay?'+urlencode({
+                    'nonce':'synthetic','target':'wss://test.discord.media/?v=9','sid':format(index,'032x')})
+                for index in range(8):
+                    client=await connect(url(index),proxy=None,origin='https://discord.com');clients.append(client)
+                    self.assertEqual(await asyncio.wait_for(client.recv(),2),'ready')
+                self.assertEqual(relay.stats['activeControls'],8)
+                with self.assertRaises(InvalidStatus) as rejected:
+                    await connect(url(8),proxy=None,origin='https://discord.com')
+                self.assertEqual(rejected.exception.response.status_code,409)
+        finally:
+            await asyncio.gather(*(client.close() for client in clients),return_exceptions=True)
+            await relay.close()
+
+    async def test_replacement_control_waits_for_old_upstream_cleanup(self):
+        cleanup_started=asyncio.Event();release_cleanup=asyncio.Event();openings=0
+        async def remote_handler(peer):
+            await peer.send('ready');await peer.wait_closed()
+        async with serve(remote_handler,'127.0.0.1',0) as remote:
+            remote_url='ws://127.0.0.1:'+str(remote.sockets[0].getsockname()[1])
+            @asynccontextmanager
+            async def connector(target,**options):
+                nonlocal openings
+                openings+=1;first=openings==1
+                async with connect(remote_url,proxy=None) as upstream:
+                    try:yield upstream
+                    finally:
+                        if first:cleanup_started.set();await release_cleanup.wait()
+            relay=Relay({'nonce':'synthetic','socksPort':19885,'idleSeconds':40},core=FakeCore(),connector=connector)
+            try:
+                async with serve(relay.handle,'127.0.0.1',0,process_request=relay.validate) as local:
+                    url='ws://127.0.0.1:'+str(local.sockets[0].getsockname()[1])+'/relay?'+urlencode({
+                        'nonce':'synthetic','target':'wss://test.discord.media/?v=9','sid':'a'*32})
+                    async with connect(url,proxy=None,origin='https://discord.com') as first:
+                        self.assertEqual(await asyncio.wait_for(first.recv(),2),'ready')
+                        session=relay.sessions['a'*32];media=FakeMedia();session.media=media
+                        await first.close(4000)
+                    await asyncio.wait_for(cleanup_started.wait(),2)
+                    async def replace():return await connect(url,proxy=None,origin='https://discord.com')
+                    opening=asyncio.create_task(replace())
+                    try:
+                        await asyncio.sleep(.05)
+                        self.assertFalse(opening.done(),'replacement must wait instead of receiving HTTP 409')
+                        release_cleanup.set()
+                        replacement=await asyncio.wait_for(opening,2)
+                        try:self.assertEqual(await asyncio.wait_for(replacement.recv(),2),'ready')
+                        finally:await replacement.close()
+                        self.assertIs(relay.sessions['a'*32],session)
+                        self.assertIs(session.media,media);self.assertFalse(media.closed)
+                    finally:
+                        release_cleanup.set();opening.cancel();await asyncio.gather(opening,return_exceptions=True)
+            finally:release_cleanup.set();await relay.close()
+
+    async def test_client_reconnect_close_code_reaches_media_server(self):
+        codes=[];closed=asyncio.Event()
+        async def remote_handler(peer):
+            await peer.send('ready')
+            try:
+                async for frame in peer:await peer.send(frame)
+            except ConnectionClosed:pass
+            finally:codes.append(peer.close_code);closed.set()
+        async with serve(remote_handler,'127.0.0.1',0) as remote:
+            remote_url='ws://127.0.0.1:'+str(remote.sockets[0].getsockname()[1])
+            @asynccontextmanager
+            async def connector(target,**options):
+                async with connect(remote_url,proxy=None) as upstream:yield upstream
+            relay=Relay({'nonce':'synthetic','socksPort':19885,'idleSeconds':40},core=FakeCore(),connector=connector)
+            try:
+                async with serve(relay.handle,'127.0.0.1',0) as local:
+                    url='ws://127.0.0.1:'+str(local.sockets[0].getsockname()[1])+'/relay?'+urlencode({
+                        'nonce':'synthetic','target':'wss://test.discord.media/?v=9','sid':'a'*32})
+                    for code in (4000,1001,4006):
+                        closed.clear()
+                        async with connect(url,proxy=None) as client:
+                            self.assertEqual(await asyncio.wait_for(client.recv(),2),'ready')
+                            await client.close(code)
+                        await asyncio.wait_for(closed.wait(),2)
+                        self.assertEqual(codes[-1],code,'relay must not replace a reconnect request with normal close')
+                        for _ in range(100):
+                            if not relay.stats['activeControls']:break
+                            await asyncio.sleep(.001)
+            finally:await relay.close()
+
+    async def test_outbound_burst_yields_to_other_streams(self):
+        sent=[]
+        class ImmediateSocks:
+            async def send(self,target,data):sent.append(data)
+        bridge=MediaBridge(ImmediateSocks(),('8.8.8.8',50000),{'udpUpBytes':0,'udpUpPackets':0})
+        for index in range(256):bridge.queue.put_nowait(bytes([index]))
+        task=asyncio.create_task(bridge.outbound())
+        try:
+            await asyncio.sleep(0)
+            self.assertLessEqual(len(sent),64,'a busy bridge must yield before draining the whole queue')
+            self.assertGreater(len(sent),0)
+        finally:task.cancel();await asyncio.gather(task,return_exceptions=True)
+
     async def test_fresh_ready_replaces_media_but_resume_keeps_it(self):
         for version in (8,9,10):
             with self.subTest(version=version):
@@ -268,6 +371,16 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             client.sendto(b'after-malformed',('127.0.0.1',bridge.local_port))
             self.assertEqual((await asyncio.wait_for(client_protocol.queue.get(),2))[0],b'after-malformed')
             self.assertEqual(stats['udpMalformedPackets'],1)
+            # A keyframe-sized burst must survive the loopback OS queues,
+            # independently of the Python queue drop counters.
+            payloads=[struct.pack('!I',index)+b'X'*1196 for index in range(400)]
+            for payload in payloads:client.sendto(payload,('127.0.0.1',bridge.local_port))
+            received=[]
+            for _ in payloads:received.append((await asyncio.wait_for(client_protocol.queue.get(),5))[0])
+            self.assertEqual(received,payloads)
+            self.assertEqual(stats.get('udpQueueDrops',0),0)
+            self.assertEqual(stats.get('udpReceiveQueueDrops',0),0)
+            self.assertEqual(bridge.down_packets,403)
             # Re-identify to the same SFU with a new native Discord UDP socket.
             # It must receive replies through a fresh bridge, not the old peer.
             settings={'socksPort':server.sockets[0].getsockname()[1],'nonce':'synthetic'}

@@ -4,6 +4,18 @@ import ipaddress
 import socket
 import struct
 
+# A keyframe can arrive as hundreds of datagrams while the game occupies a
+# CPU core. The OS queue is separate from PacketQueue; its default can be only
+# 64 KiB even when our Python queue reports no drops. Keep both queues bounded.
+UDP_BUFFER_BYTES=4*1024*1024
+
+def configure_datagram_socket(transport):
+    sock=transport.get_extra_info('socket')
+    if sock is None:return
+    for option in (socket.SO_RCVBUF,socket.SO_SNDBUF):
+        try:sock.setsockopt(socket.SOL_SOCKET,option,UDP_BUFFER_BYTES)
+        except OSError:pass  # Some platforms cap buffers; retain their limit.
+
 def pack_packet(target,payload):
     host,port=target
     address=ipaddress.ip_address(host)
@@ -20,6 +32,9 @@ def unpack_packet(data):
 
 class PacketQueue(asyncio.DatagramProtocol):
     def __init__(self): self.queue=asyncio.Queue(maxsize=1024);self.drops=0;self.stats=None
+    def connection_made(self,transport):configure_datagram_socket(transport)
+    def error_received(self,error):
+        if self.stats is not None:self.stats['udpSocketErrors']=self.stats.get('udpSocketErrors',0)+1
     def datagram_received(self,data,source):
         try: self.queue.put_nowait((data,source))
         except asyncio.QueueFull:

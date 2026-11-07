@@ -13,6 +13,9 @@ async function main(){try{
  const context=vm.createContext({require:name=>modules[name],__dirname:source,module:{exports:{}},location:{protocol:'https:',hostname:'discord.com'},process:{ppid:4321,platform:'win32',env:{}},setTimeout,URL});
  vm.runInContext(fs.readFileSync(path.join(source,'native.cjs'),'utf8'),context);context.module.exports.start(temp);
  assert.equal(typeof bridge.ensureHelper,'function');await bridge.ensureHelper();
+ bridge.reportPlayback({attempts:1,lastReason:'video-decode-stalled',token:'DO-NOT-SHARE',streams:[{sender:false,requested:true,frames:42,packets:100,decodeErrors:NaN,state:'RTC_CONNECTED',userId:'DO-NOT-SHARE'}]});
+ const playback=fs.readFileSync(path.join(temp,'data','playback-status.json'),'utf8');
+ assert(!playback.includes('DO-NOT-SHARE'));assert(!playback.includes('decodeErrors'));assert.equal(JSON.parse(playback).streams[0].frames,42);
  const store={constructor:{displayName:'StreamRTCConnectionStore'},getRTCConnections:()=>({}),addChangeListener(){},removeChangeListener(){}};
  const renderer=vm.createContext({URL,URLSearchParams,crypto:require('crypto'),setTimeout,Vencord:{Webpack:{findStore(){throw TypeError('Reflect.get called on non-object');},cache:{stream:{exports:{store}}}}}});renderer.window=renderer;
  await vm.runInContext(scripts[0],renderer);

@@ -4,10 +4,25 @@ import tempfile
 import time
 import unittest
 
-from diagnostics import runtime_snapshot,save_report
+from diagnostics import runtime_snapshot,save_report,playback_snapshot
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_playback_report_allows_only_numeric_counters_and_known_states(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory)
+            self.assertFalse(playback_snapshot(base)['available'])
+            value={'updatedAt':time.time(),'attempts':2,'lastReason':'video-decode-stalled','token':'DO-NOT-SHARE',
+                'streams':[{'sender':False,'requested':True,'frames':42,'packetsLost':5,
+                    'decodeErrors':float('nan'),'decryptFailures':3,'state':'RTC_CONNECTED','userId':'DO-NOT-SHARE'},
+                    {'state':'DO-NOT-SHARE','frames':-1}]}
+            (base/'playback-status.json').write_text(json.dumps(value),encoding='utf-8')
+            report=playback_snapshot(base)
+            self.assertFalse(report['stale']);self.assertEqual(report['streams'][0]['frames'],42)
+            self.assertNotIn('DO-NOT-SHARE',json.dumps(report));self.assertNotIn('decodeErrors',report['streams'][0])
+            value['updatedAt']=time.time()-30
+            (base/'playback-status.json').write_text(json.dumps(value),encoding='utf-8')
+            self.assertTrue(playback_snapshot(base)['stale'])
     def test_report_removes_credentials_addresses_paths_and_unknown_fields(self):
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory)

@@ -9,7 +9,7 @@ NUMBERS={'updatedAt','warmupMs','lastWarmupAgeSeconds','coreGeneration','activeC
     'openedControls','controlUpBytes','controlDownBytes','udpUpBytes','udpDownBytes','udpUpPackets','udpDownPackets',
     'udpQueueDrops','udpReceiveQueueDrops','udpMalformedPackets','udpDiscoveryRetries','controlRetries',
     'mediaStartupTimeouts','mediaResets','coreRestarts','lastUdpDownAt','lastTunnelCheckAt',
-    'udpPathChecks','udpPathProbes','mediaPathTimeouts','mediaPathChanges',
+    'udpPathChecks','udpPathProbes','mediaPathTimeouts','mediaPathChanges','udpSocketErrors',
     'activeGatewayControls','openedGatewayControls','gatewayConnectMs','gatewayUpBytes','gatewayDownBytes','gatewayRetries'}
 FLAGS={'configurationReady','coreRunning','stopping','keepWarm','tunnelReachable'}
 STREAM_FLAGS={'active','controlConnected','mediaAllocated','localPeerSeen','udpSent','udpReceived'}
@@ -47,7 +47,7 @@ def runtime_snapshot(base):
     for stream in streams[:8] if isinstance(streams,list) else []:
         if not isinstance(stream,dict):continue
         clean={name:value for name,value in stream.items() if name in STREAM_FLAGS and type(value) is bool}
-        for name in ('controlConnectMs','discoveryMs'):
+        for name in ('controlConnectMs','discoveryMs','udpUpPackets','udpDownPackets','lastMediaDownAgeSeconds'):
             value=stream.get(name)
             if value is None or number(value):clean[name]=value
         result['streams'].append(clean)
@@ -67,9 +67,36 @@ def runtime_snapshot(base):
 def save_report(base,installation):
     report={name:installation[name] for name in ('version','vencordFound','integrationInstalled','configurationPresent','corePresent') if name in installation}
     report['runtime']=runtime_snapshot(base)
+    report['playback']=playback_snapshot(base)
     destination=Path(base)/'diagnostico.json'
     destination.parent.mkdir(parents=True,exist_ok=True)
     temporary=destination.with_suffix('.tmp')
     temporary.write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False)+'\n',encoding='utf-8')
     temporary.replace(destination)
     return str(destination)
+
+
+def playback_snapshot(base):
+    try:
+        file=Path(base)/'playback-status.json'
+        if file.stat().st_size>16384:return {'available':False}
+        value=json.loads(file.read_text(encoding='utf-8'))
+        if not isinstance(value,dict):return {'available':False}
+    except (OSError,ValueError):return {'available':False}
+    updated=value.get('updatedAt')
+    result={'available':True,'stale':not number(updated) or not 0<=time.time()-updated<=20}
+    for name in ('updatedAt','attempts'):
+        if number(value.get(name)):result[name]=value[name]
+    if value.get('lastReason') in ('first-frame-timeout','video-decode-stalled'):result['lastReason']=value['lastReason']
+    result['streams']=[]
+    streams=value.get('streams')
+    for stream in streams[:8] if isinstance(streams,list) else []:
+        if not isinstance(stream,dict):continue
+        clean={}
+        for name in ('sender','requested'):
+            if type(stream.get(name)) is bool:clean[name]=stream[name]
+        for name in ('frames','packets','packetsLost','decodeErrors','decryptFailures','recoveryAttempts'):
+            if number(stream.get(name)):clean[name]=stream[name]
+        if stream.get('state') in ('RTC_CONNECTED','RTC_CONNECTING','RTC_DISCONNECTED','NO_ROUTE','AWAITING_ENDPOINT','OTHER'):clean['state']=stream['state']
+        result['streams'].append(clean)
+    return result

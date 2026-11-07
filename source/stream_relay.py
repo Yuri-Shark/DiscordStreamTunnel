@@ -22,12 +22,14 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed,ProxyError
 
 from configuration import BASE,CORE,local_settings
-from socks_udp import SocksUDP
+from socks_udp import SocksUDP,configure_datagram_socket
 
 HOST=re.compile(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.discord\.media\Z')
 GATEWAY_HOST=re.compile(r'gateway(?:-[a-z0-9]+)*\.discord\.gg\Z')
 VERSION=json.loads((Path(__file__).resolve().parent/'version.json').read_text())['version']
 SID=re.compile(r'[a-f0-9]{32}\Z')
+MAX_ACTIVE_STREAMS=8
+MAX_STREAM_SESSIONS=16
 class MissingConfiguration(Exception): pass
 class TunnelRestarted(ConnectionError): pass
 class MediaStartupTimeout(ConnectionError): pass
@@ -101,6 +103,7 @@ def sfu_target(message):
 class Core:
     def __init__(self,settings,base=BASE):
         self.settings,self.base,self.process,self.lock=settings,base,None,asyncio.Lock()
+        self.child_job=None
     @property
     def running(self): return self.process is not None and self.process.poll() is None
     async def ensure(self):
@@ -119,19 +122,34 @@ class Core:
         config=self.base/'private-core.json'
         if not config.exists(): raise MissingConfiguration()
         environment={**os.environ,'GOMAXPROCS':'2','GOMEMLIMIT':'128MiB'}
+        if os.name=='nt' and self.child_job is None:
+            from windows_process import ChildJob
+            self.child_job=ChildJob()
         self.process=subprocess.Popen([str(CORE),'run','-c',str(config)],cwd=self.base,
             stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,env=environment,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+        if self.child_job is not None:
+            try:self.child_job.assign(self.process)
+            except BaseException:
+                await self._stop();raise
         deadline=time.monotonic()+5
         while time.monotonic()<deadline:
             if not self.running: raise ConnectionError('WireGuard core exited')
-            try:await self.probe();return
+            try:
+                await self.probe()
+                # A stale process can accept the port before the new core
+                # reports its bind failure. Never adopt that unrelated proxy.
+                await asyncio.sleep(.05)
+                if not self.running:raise ConnectionError('WireGuard core exited')
+                return
             except (OSError,TimeoutError,asyncio.TimeoutError):await asyncio.sleep(.05)
         await self._stop();raise TimeoutError('Local WireGuard core did not start')
     async def restart(self):
         async with self.lock:
             await self._stop();await self._ensure()
     async def stop(self):
-        async with self.lock:await self._stop()
+        async with self.lock:
+            await self._stop()
+            if self.child_job is not None:self.child_job.close();self.child_job=None
     async def _stop(self):
         if self.running:
             self.process.terminate()
@@ -142,7 +160,11 @@ class Core:
 
 class LocalDatagrams(asyncio.DatagramProtocol):
     def __init__(self,bridge): self.bridge=bridge
-    def connection_made(self,transport): self.bridge.transport=transport
+    def connection_made(self,transport):
+        self.bridge.transport=transport
+        configure_datagram_socket(transport)
+    def error_received(self,error):
+        stats=self.bridge.stats;stats['udpSocketErrors']=stats.get('udpSocketErrors',0)+1
     def datagram_received(self,data,addr):
         b=self.bridge
         if addr[0]!='127.0.0.1' or len(data)>65507: return
@@ -160,6 +182,7 @@ class MediaBridge:
         self.socks,self.target,self.stats=socks,target,stats
         self.transport=None;self.peer=None;self.tasks=[];self.queue=asyncio.Queue(maxsize=512)
         self.first_up_at=None;self.first_down_at=None
+        self.up_packets=0;self.down_packets=0;self.last_media_down_at=None
         self.discovery_packet=None;self.discovery_started=None;self.discovery_ms=None
         self.discovery_pending=asyncio.Event();self.discovery_done=asyncio.Event()
         self.startup_timeout=8
@@ -186,6 +209,10 @@ class MediaBridge:
             await self.socks.send(self.target,data)
             if self.first_up_at is None:self.first_up_at=time.monotonic()
             self.stats['udpUpBytes']+=len(data);self.stats['udpUpPackets']+=1
+            self.up_packets+=1
+            # Queue.get and SocksUDP.send may both complete synchronously.
+            # Give other streams, receive callbacks and heartbeats a turn.
+            if self.up_packets%64==0:await asyncio.sleep(0)
     async def discover(self):
         # Only repeat Discord's unencrypted, idempotent IP discovery query.
         # Never replay encrypted media, DAVE frames or control messages.
@@ -249,6 +276,9 @@ class MediaBridge:
             if self.first_down_at is None:self.first_down_at=self.last_down_at
             self.stats['udpDownBytes']+=len(data);self.stats['udpDownPackets']+=1
             self.stats['lastUdpDownAt']=time.time()
+            self.down_packets+=1
+            if not discovery:self.last_media_down_at=self.last_down_at
+            if self.down_packets%64==0:await asyncio.sleep(0)
     async def close(self):
         for task in self.tasks: task.cancel()
         await asyncio.gather(*self.tasks,return_exceptions=True)
@@ -259,6 +289,7 @@ class StreamSession:
     def __init__(self,target):
         self.target=target;self.media=None;self.media_target=None;self.active=False;self.connected=False;self.closed_at=time.monotonic()
         self.connected_at=None;self.control_ms=None;self.failure_handled=False
+        self.inactive=asyncio.Event();self.inactive.set()
 
 class Relay:
     def __init__(self,settings,core=None,connector=connect,media_factory=MediaBridge.create,owner_pid=None,clock=None):
@@ -270,6 +301,7 @@ class Relay:
             'udpReceiveQueueDrops':0,'udpMalformedPackets':0,'udpDiscoveryRetries':0,'controlRetries':0,
             'mediaStartupTimeouts':0,'mediaResets':0,'coreRestarts':0,'lastUdpDownAt':None,'lastErrorClass':None}
         self.stats.update(udpPathChecks=0,udpPathProbes=0,mediaPathTimeouts=0,mediaPathChanges=0)
+        self.stats['udpSocketErrors']=0
         self.stats.update(activeGatewayControls=0,openedGatewayControls=0,gatewayConnectMs=None,
             gatewayUpBytes=0,gatewayDownBytes=0,gatewayRetries=0)
         self.events=[]
@@ -384,7 +416,7 @@ class Relay:
         recent_media=self.stats['lastUdpDownAt'] is not None and time.time()-self.stats['lastUdpDownAt']<30
         reachable=True if recent_media else self.tunnel_reachable if self.tunnel_checked_at is not None and time.time()-self.tunnel_checked_at<60 else None
         return {'service':'DiscordStreamTunnel','protocolVersion':1,'pid':os.getpid(),'ownerPID':self.owner_pid,'configurationReady':(BASE/'private-core.json').exists(),'coreRunning':self.core.running,
-            'version':VERSION,'buildRevision':'media-liveness-20261105','warmupMs':self.warmup_ms,
+            'version':VERSION,'buildRevision':'stream-recovery-20261106','warmupMs':self.warmup_ms,
             'keepWarm':bool(self.owner_pid),'lastWarmupAgeSeconds':None if self.warmed_at is None else round(time.monotonic()-self.warmed_at,1),
             'stopping':self.stopping,'coreGeneration':self.generation,
             'tunnelReachable':reachable,'lastTunnelCheckAt':self.tunnel_checked_at,
@@ -393,13 +425,15 @@ class Relay:
     def stream_diagnostics(self):
         # No URLs, session IDs, tokens, payloads, addresses or media keys.
         result=[]
-        for session in self.sessions.values():
+        for session in sorted(self.sessions.values(),key=lambda item:not item.active):
             media=session.media
             result.append({'active':session.active,'controlConnected':session.connected,'controlConnectMs':session.control_ms,
                 'mediaAllocated':media is not None,'localPeerSeen':media is not None and getattr(media,'peer',None) is not None,
                 'udpSent':media is not None and getattr(media,'first_up_at',None) is not None,
                 'udpReceived':media is not None and getattr(media,'first_down_at',None) is not None,
-                'discoveryMs':getattr(media,'discovery_ms',None)})
+                'discoveryMs':getattr(media,'discovery_ms',None),
+                'udpUpPackets':getattr(media,'up_packets',0),'udpDownPackets':getattr(media,'down_packets',0),
+                'lastMediaDownAgeSeconds':None if getattr(media,'last_media_down_at',None) is None else round(time.monotonic()-media.last_media_down_at,1)})
         return result
     async def validate(self,connection,request):
         if request.headers.get('Origin')!='https://discord.com': return connection.respond(403,'Forbidden')
@@ -422,20 +456,37 @@ class Relay:
         try: target,sid=request_details(request.path,self.settings['nonce'])
         except PermissionError: return connection.respond(401,'Unauthorized')
         except ValueError: return connection.respond(400,'Invalid request')
-        if self.stats['activeControls']>=4 or (sid in self.sessions and self.sessions[sid].active): return connection.respond(409,'Receiver limit')
-        if sid not in self.sessions and len(self.sessions)>=8:
+        previous=self.sessions.get(sid)
+        if previous is not None and previous.active:
+            # Discord starts its replacement WebSocket before the upstream
+            # context has necessarily finished closing. Preserve the old bridge
+            # for Resume and give cleanup a bounded handover window.
+            try:await asyncio.wait_for(previous.inactive.wait(),2)
+            except asyncio.TimeoutError:return connection.respond(409,'Session still active')
+        if self.stats['activeControls']>=MAX_ACTIVE_STREAMS or (sid in self.sessions and self.sessions[sid].active): return connection.respond(409,'Receiver limit')
+        if sid not in self.sessions and len(self.sessions)>=MAX_STREAM_SESSIONS:
             inactive=[(key,value) for key,value in self.sessions.items() if not value.active]
             if not inactive:return connection.respond(503,'Session limit')
             oldest,previous=min(inactive,key=lambda item:item[1].closed_at)
             self.sessions.pop(oldest)
             if previous.media:await previous.media.close()
     async def pump_up(self,client,upstream):
-        async for frame in client:
-            size=len(frame.encode() if isinstance(frame,str) else frame)
-            if size>1048576:
-                await client.close(1009);return
-            await upstream.send(frame)
-            self.stats['controlUpBytes']+=size
+        try:
+            async for frame in client:
+                size=len(frame.encode() if isinstance(frame,str) else frame)
+                if size>1048576:
+                    await client.close(1009);return
+                await upstream.send(frame)
+                self.stats['controlUpBytes']+=size
+        except ConnectionClosed as error:
+            code=error.rcvd.code if error.rcvd else 4000
+            await upstream.close(code if code in (1000,1001) or 3000<=code<=4999 else 4000)
+            raise
+        else:
+            # The context manager's default close(1000) can invalidate a
+            # session whose client explicitly requested reconnect/resume.
+            code=getattr(client,'close_code',None) or 1000
+            await upstream.close(code if code in (1000,1001) or 3000<=code<=4999 else 4000)
     async def pump_down(self,upstream,client,session):
         async for frame in upstream:
             # A fresh READY invalidates old media even in v10, where the new
@@ -496,8 +547,8 @@ class Relay:
         if session.target!=target:
             if session.media: await session.media.close()
             session=StreamSession(target);self.sessions[sid]=session
-        if session.active or self.stats['activeControls']>=4: await client.close(1013);return
-        session.active=True;self.stats['activeControls']+=1
+        if session.active or self.stats['activeControls']>=MAX_ACTIVE_STREAMS: await client.close(1013);return
+        session.active=True;session.inactive.clear();self.stats['activeControls']+=1
         session.client=client;session.failure_handled=False;session.connected_at=None;session.control_ms=None
         started=self.clock()
         generation=self.generation
@@ -547,6 +598,7 @@ class Relay:
         finally:
             session.active=False;session.connected=False;session.closed_at=time.monotonic()
             self.stats['activeControls']-=1;self.last_control=time.monotonic()
+            session.inactive.set()
 
     async def handle_gateway(self,client):
         target=gateway_details(client.request.path,self.settings['nonce'])

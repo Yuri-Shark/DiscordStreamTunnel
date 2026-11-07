@@ -31,7 +31,23 @@ function start(root){
   }throw Error('HelperUnavailable');
  }
  function ensureHelper(){if(!pending)pending=launch().finally(()=>{pending=undefined;});return pending;}
- contextBridge.exposeInMainWorld('DiscordProtonStreamsNative',{ensureHelper,rememberVideoGuard(value){if(value!==null&&(!Number.isInteger(value)||value<0||value>100))throw Error('InvalidVariant');const file=path.join(data,'video-guard-before.json');if(!fs.existsSync(file))fs.writeFileSync(file,JSON.stringify({variantId:value}),{mode:0o600});}});
+ let lastPlaybackReport=null;
+ function reportPlayback(value){
+  if(lastPlaybackReport!==null&&Date.now()-lastPlaybackReport<10000)return;
+  if(!value||!Array.isArray(value.streams)||value.streams.length>8)return;
+  const number=x=>typeof x==='number'&&Number.isFinite(x)&&x>=0&&x<1e18;
+  const report={updatedAt:Date.now()/1000,attempts:number(value.attempts)?value.attempts:0,
+   lastReason:['first-frame-timeout','video-decode-stalled'].includes(value.lastReason)?value.lastReason:null,
+   streams:value.streams.map(stream=>{
+    const clean={};
+    for(const name of ['sender','requested'])if(typeof stream?.[name]==='boolean')clean[name]=stream[name];
+    for(const name of ['frames','packets','packetsLost','decodeErrors','decryptFailures','recoveryAttempts'])if(number(stream?.[name]))clean[name]=stream[name];
+    if(['RTC_CONNECTED','RTC_CONNECTING','RTC_DISCONNECTED','NO_ROUTE','AWAITING_ENDPOINT','OTHER'].includes(stream?.state))clean.state=stream.state;
+    return clean;
+   })};
+  try{const file=path.join(data,'playback-status.json'),temp=file+'.tmp';fs.writeFileSync(temp,JSON.stringify(report),{mode:0o600});fs.renameSync(temp,file);lastPlaybackReport=Date.now();}catch{}
+ }
+ contextBridge.exposeInMainWorld('DiscordProtonStreamsNative',{ensureHelper,reportPlayback,rememberVideoGuard(value){if(value!==null&&(!Number.isInteger(value)||value<0||value>100))throw Error('InvalidVariant');const file=path.join(data,'video-guard-before.json');if(!fs.existsSync(file))fs.writeFileSync(file,JSON.stringify({variantId:value}),{mode:0o600});}});
  // Startup and helper readiness run in parallel. A failed warmup never blocks UI.
  ensureHelper().then(()=>probe('/warmup')).catch(()=>{});
  const notice=require('./update-ui.cjs').start({root,runningVersion:version,repair});
