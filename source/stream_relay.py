@@ -22,7 +22,7 @@ from websockets.asyncio.server import serve
 from websockets.exceptions import ConnectionClosed,ProxyError
 
 from configuration import BASE,CORE,local_settings
-from socks_udp import SocksUDP,configure_datagram_socket,create_loopback_endpoint
+from socks_udp import SocksUDP,DatagramFlowControl,configure_datagram_socket,create_loopback_endpoint
 
 HOST=re.compile(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.discord\.media\Z')
 GATEWAY_HOST=re.compile(r'gateway(?:-[a-z0-9]+)*\.discord\.gg\Z')
@@ -158,8 +158,9 @@ class Core:
                 self.process.kill();await asyncio.to_thread(self.process.wait,3)
         self.process=None
 
-class LocalDatagrams(asyncio.DatagramProtocol):
-    def __init__(self,bridge): self.bridge=bridge
+class LocalDatagrams(DatagramFlowControl):
+    def __init__(self,bridge):
+        super().__init__();self.bridge=bridge;self.stats=bridge.stats
     def connection_made(self,transport):
         self.bridge.transport=transport
         configure_datagram_socket(transport)
@@ -181,6 +182,7 @@ class MediaBridge:
     def __init__(self,socks,target,stats):
         self.socks,self.target,self.stats=socks,target,stats
         self.transport=None;self.peer=None;self.tasks=[];self.queue=asyncio.Queue(maxsize=512)
+        self.local_protocol=LocalDatagrams(self)
         self.first_up_at=None;self.first_down_at=None
         self.up_packets=0;self.down_packets=0;self.last_media_down_at=None
         self.discovery_packet=None;self.discovery_started=None;self.discovery_ms=None
@@ -195,7 +197,7 @@ class MediaBridge:
         bridge=cls(socks,target,stats)
         bridge.startup_timeout=settings.get('mediaStartupSeconds',8)
         try:
-            await create_loopback_endpoint(lambda:LocalDatagrams(bridge))
+            await create_loopback_endpoint(lambda:bridge.local_protocol)
             bridge.tasks=[asyncio.create_task(bridge.outbound()),asyncio.create_task(bridge.inbound()),
                           asyncio.create_task(socks.watch_control()),asyncio.create_task(bridge.discover())]
             return bridge
@@ -271,7 +273,9 @@ class MediaBridge:
                     self.discovery_endpoint=endpoint
                     self.discovery_ms=round((time.monotonic()-self.discovery_started)*1000);self.discovery_done.set()
                 self.native_discovery_pending=False
-            if forward:self.transport.sendto(data,self.peer)
+            if forward:
+                await self.local_protocol.drain()
+                self.transport.sendto(data,self.peer)
             self.last_down_at=time.monotonic();self.path_response.set()
             if self.first_down_at is None:self.first_down_at=self.last_down_at
             self.stats['udpDownBytes']+=len(data);self.stats['udpDownPackets']+=1
@@ -302,6 +306,8 @@ class Relay:
             'mediaStartupTimeouts':0,'mediaResets':0,'coreRestarts':0,'lastUdpDownAt':None,'lastErrorClass':None}
         self.stats.update(udpPathChecks=0,udpPathProbes=0,mediaPathTimeouts=0,mediaPathChanges=0)
         self.stats['udpSocketErrors']=0
+        self.stats['udpSendBackpressure']=0
+        self.stats['udpSendTimeouts']=0
         self.stats.update(activeGatewayControls=0,openedGatewayControls=0,gatewayConnectMs=None,
             gatewayUpBytes=0,gatewayDownBytes=0,gatewayRetries=0)
         self.events=[]
@@ -684,11 +690,16 @@ class Relay:
             if not self.owner_pid and not self.sessions and not self.stats['activeControls'] and not self.gateway_clients and now-self.last_control>self.settings.get('warmIdleSeconds',120):
                 await self.core.stop()
             record={'pid':os.getpid(),'corePID':self.core.process.pid if self.core.running else None,'updatedAt':time.time(),
-                **self.health(),**self.stats,'streams':self.stream_diagnostics(),'recentEvents':self.events}
+                **self.health(),**self.stats,'streams':self.stream_diagnostics(),'recentEvents':list(self.events)}
             try:
-                temp=BASE/'status.tmp';temp.write_text(json.dumps(record,indent=2),encoding='utf-8');temp.replace(BASE/'status.json')
+                # Disk/antivirus stalls must not stop every media socket on
+                # this event loop. Only one snapshot is written at a time.
+                await asyncio.to_thread(self.write_status,record)
             except OSError as error:self.note('status-write-error',errorClass=type(error).__name__)
             await asyncio.sleep(2)
+    @staticmethod
+    def write_status(record):
+        temp=BASE/'status.tmp';temp.write_text(json.dumps(record,indent=2),encoding='utf-8');temp.replace(BASE/'status.json')
     async def close(self):
         self.stopping=True
         if self.pending_recovery:

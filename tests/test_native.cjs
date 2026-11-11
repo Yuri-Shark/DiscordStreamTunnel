@@ -9,11 +9,20 @@ async function main(){try{
  let bridge,updateChecks=0,originalInvoked=0;const scripts=[];
  const ipc={invoke(channel){originalInvoked++;if(channel==='VencordBuild')fs.writeFileSync(preload,'// Vencord updated upstream\n');return Promise.resolve({ok:true,value:true});}};
  const http={get(_options,callback){const request={once(){return this;},destroy(){}};queueMicrotask(()=>callback({statusCode:200,on(event,fn){if(event==='data')fn(JSON.stringify({service:'DiscordStreamTunnel',protocolVersion:1,configurationReady:true,version:JSON.parse(fs.readFileSync(path.join(source,'version.json'))).version,ownerPID:4321}));if(event==='end')fn();return this;}}));return request;}};
- const modules={fs,path,crypto:require('crypto'),child_process:{spawn(){throw Error('Unexpected spawn');}},http,'electron/renderer':{ipcRenderer:ipc,webFrame:{executeJavaScript:script=>{scripts.push(script);return Promise.resolve();}},contextBridge:{exposeInMainWorld(_name,value){bridge=value;}}},'./repair.cjs':repair,'./update.cjs':{check(){updateChecks++;return Promise.resolve();}},'./update-ui.cjs':{start(){return Promise.resolve();}}};
+ const modules={fs:{...fs,promises:fs.promises},path,crypto:require('crypto'),child_process:{spawn(){throw Error('Unexpected spawn');}},http,'electron/renderer':{ipcRenderer:ipc,webFrame:{executeJavaScript:script=>{scripts.push(script);return Promise.resolve();}},contextBridge:{exposeInMainWorld(_name,value){bridge=value;}}},'./repair.cjs':repair,'./update.cjs':{check(){updateChecks++;return Promise.resolve();}},'./update-ui.cjs':{start(){return Promise.resolve();}}};
  const context=vm.createContext({require:name=>modules[name],__dirname:source,module:{exports:{}},location:{protocol:'https:',hostname:'discord.com'},process:{ppid:4321,platform:'win32',env:{}},setTimeout,URL});
  vm.runInContext(fs.readFileSync(path.join(source,'native.cjs'),'utf8'),context);context.module.exports.start(temp);
  assert.equal(typeof bridge.ensureHelper,'function');await bridge.ensureHelper();
- bridge.reportPlayback({attempts:1,lastReason:'video-decode-stalled',token:'DO-NOT-SHARE',streams:[{sender:false,requested:true,frames:42,packets:100,decodeErrors:NaN,state:'RTC_CONNECTED',userId:'DO-NOT-SHARE'}]});
+ let releaseWrite,writes=0;const writeGate=new Promise(resolve=>{releaseWrite=resolve;});
+ const nativeFs=modules.fs,originalWrite=fs.promises.writeFile;
+ // Simulate a disk stalled by scanning/flush without blocking the renderer.
+ // Reports arriving meanwhile must not race over the same temporary file.
+ Object.defineProperty(nativeFs,'promises',{configurable:true,value:{...fs.promises,async writeFile(...args){writes++;await writeGate;return originalWrite(...args);}}});
+ const reporting=bridge.reportPlayback({attempts:1,lastReason:'video-decode-stalled',token:'DO-NOT-SHARE',streams:[{sender:false,requested:true,frames:42,packets:100,decodeErrors:NaN,state:'RTC_CONNECTED',userId:'DO-NOT-SHARE'}]});
+ try{
+  assert.equal(writes,1);assert.equal(fs.existsSync(path.join(temp,'data','playback-status.json')),false);
+  await bridge.reportPlayback({attempts:99,streams:[]});assert.equal(writes,1,'slow reports must not queue more disk writes');
+ }finally{releaseWrite();await reporting;Object.defineProperty(nativeFs,'promises',{configurable:true,value:{...nativeFs.promises,writeFile:originalWrite}});}
  const playback=fs.readFileSync(path.join(temp,'data','playback-status.json'),'utf8');
  assert(!playback.includes('DO-NOT-SHARE'));assert(!playback.includes('decodeErrors'));assert.equal(JSON.parse(playback).streams[0].frames,42);
  const store={constructor:{displayName:'StreamRTCConnectionStore'},getRTCConnections:()=>({}),addChangeListener(){},removeChangeListener(){}};

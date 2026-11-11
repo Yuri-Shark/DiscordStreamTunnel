@@ -10,7 +10,7 @@ NUMBERS={'updatedAt','warmupMs','lastWarmupAgeSeconds','coreGeneration','activeC
     'openedControls','controlUpBytes','controlDownBytes','udpUpBytes','udpDownBytes','udpUpPackets','udpDownPackets',
     'udpQueueDrops','udpReceiveQueueDrops','udpMalformedPackets','udpDiscoveryRetries','controlRetries',
     'mediaStartupTimeouts','mediaResets','coreRestarts','lastUdpDownAt','lastTunnelCheckAt',
-    'udpPathChecks','udpPathProbes','mediaPathTimeouts','mediaPathChanges','udpSocketErrors',
+    'udpPathChecks','udpPathProbes','mediaPathTimeouts','mediaPathChanges','udpSocketErrors','udpSendBackpressure','udpSendTimeouts',
     'activeGatewayControls','openedGatewayControls','gatewayConnectMs','gatewayUpBytes','gatewayDownBytes','gatewayRetries'}
 FLAGS={'configurationReady','coreRunning','stopping','keepWarm','tunnelReachable'}
 STREAM_FLAGS={'active','controlConnected','mediaAllocated','localPeerSeen','udpSent','udpReceived'}

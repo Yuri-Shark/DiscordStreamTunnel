@@ -1,4 +1,48 @@
-# Análise de conexão e recuperação — 1.5.6
+# Análise de conexão e recuperação — 1.5.7
+
+## Travamentos intermitentes, disco e filas de envio — 1.5.7
+
+Foram reproduzidas duas falhas locais na revisão 1.5.6:
+
+1. `Relay.maintain` gravava e renomeava `status.json` diretamente no loop
+   de eventos do UDP, a cada dois segundos. No teste com uma gravação
+   bloqueada por 500 ms, o loop inteiro para nesse intervalo. A gravação
+   agora usa `asyncio.to_thread`, com uma única gravação por vez. O teste
+   comprova que um datagrama real é recebido enquanto o disco ainda aguarda.
+   O preload também usa a API assíncrona do Node para `playback-status.json`,
+   sem acumular gravações caso a anterior ainda esteja pendente.
+2. As filas explícitas eram limitadas, mas `transport.sendto()` não aguardava
+   a conclusão do envio. No Proactor do Windows, uma rajada podia migrar para
+   a fila interna do transporte sem respeitar seus limites de escrita. Os
+   protocolos locais agora implementam `pause_writing`/`resume_writing`;
+   os consumidores aguardam capacidade antes de encaminhar o próximo pacote.
+   Isso vale para o SOCKS e para a entrega ao Discord. Pacotes criptografados
+   mantêm bytes e ordem; uma tela congestionada não bloqueia outra.
+
+Uma espera de escrita superior a dois segundos gera `LocalUDPWriteTimeout`
+e permite à recuperação existente descartar somente a ponte afetada e
+solicitar nova negociação. Fechamento e cancelamento interrompem a espera.
+As filas de aplicação continuam limitadas e seus descartes continuam
+contabilizados; isso não elimina perdas nos buffers do sistema ou na rede.
+Os contadores `udpSendBackpressure` e `udpSendTimeouts` distinguem pressão
+de envio local no diagnóstico filtrado, sem endereços nem conteúdo.
+
+`tests/test_stream_stability.py` cobre disco lento com UDP real, rajada de
+400 datagramas de 1.200 bytes (com sinalização real de congestionamento no
+Windows), isolamento entre telas, ordem/integridade, timeout, fechamento e
+cancelamento. Os testes de disco lento e de limite de envio foram executados
+contra o código anterior e falharam nas condições esperadas. O teste nativo
+também mantém uma gravação pendente e verifica que novos relatórios não
+disparam gravações concorrentes.
+
+A amostra local disponível durante a investigação mostrava UDP ativo, sem
+descartes nas filas explícitas ou reinícios do núcleo. Ela não é um relatório
+do computador do usuário afetado. Estes resultados comprovam as falhas locais
+e as correções nos cenários testados; não atribuem todos os congelamentos a
+elas nem substituem uma comparação em chamada real no computador afetado.
+
+Referências: [transports e controle de fluxo do asyncio](https://docs.python.org/3.14/library/asyncio-protocol.html)
+e [implementação do transporte Proactor](https://github.com/python/cpython/blob/3.14/Lib/asyncio/proactor_events.py).
 
 ## Compatibilidade UDP no Windows 10/11 — 1.5.6
 

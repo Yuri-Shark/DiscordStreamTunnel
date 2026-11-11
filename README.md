@@ -47,8 +47,8 @@ existente sem pedir novamente o `.conf`.
 Flatpak e Snap não são cobertos.
 
 ```sh
-tar -xzf DiscordStreamTunnel-1.5.6-linux.tar.gz
-cd DiscordStreamTunnel-1.5.6-linux
+tar -xzf DiscordStreamTunnel-1.5.7-linux.tar.gz
+cd DiscordStreamTunnel-1.5.7-linux
 sh instalar.sh
 ```
 
@@ -59,6 +59,33 @@ com seu usuário normal. Instale Vencord pelas [instruções oficiais](https://v
 No Linux, a interface gráfica é opcional: instale `python3-tk` (Ubuntu) ou
 `tk` (CachyOS/Arch) e execute `python3 source/app.py --gui` dentro da pasta
 extraída. A instalação por terminal continua funcionando sem Tk.
+
+## O que mudou na 1.5.7
+
+- A gravação periódica do diagnóstico do auxiliar acontece fora do loop que
+  encaminha o UDP. Uma gravação lenta, por exemplo durante uma verificação
+  do antivírus, podia interromper todas as transmissões até o disco responder.
+- O diagnóstico de reprodução também é gravado de forma assíncrona no
+  Discord, com apenas uma gravação em andamento para evitar concorrência.
+- O envio UDP nos dois sentidos respeita os limites de escrita do transporte
+  `asyncio`. Antes, as filas limitadas do addon podiam escoar para uma fila
+  interna de envio sem controle, acumulando mídia atrasada no Windows.
+  Uma transmissão congestionada aguarda capacidade sem bloquear as demais.
+  Se o socket não liberar capacidade por dois segundos, a ponte falha e usa
+  a recuperação existente, em vez de esperar indefinidamente.
+- **Verificar** inclui `udpSendBackpressure` (pausas por congestionamento
+  local) e `udpSendTimeouts` (capacidade de envio não liberada no prazo).
+  Esses contadores não medem perda na rede ou no servidor Proton.
+
+Os testes reproduzem os dois problemas de transporte na 1.5.6 e passam com
+a correção. Também verificam rajadas com sockets reais, integridade e ordem
+dos pacotes, isolamento entre transmissões, cancelamento e timeout.
+Ainda é necessário confirmar a melhora no computador do usuário que reportou
+os travamentos; sem o diagnóstico dele, não há confirmação de causa única.
+
+Para aplicar, use a atualização assinada e faça uma abertura completa do
+Discord. Para atualizar manualmente, extraia o pacote **1.5.7**, feche o
+Discord e clique em **Reparar** no instalador novo. O `.conf` é preservado.
 
 ## O que mudou na 1.5.6
 

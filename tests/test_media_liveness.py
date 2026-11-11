@@ -66,12 +66,18 @@ class MediaLivenessTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(packet,delivered)
 
     async def test_active_media_does_not_generate_discovery_probes(self):
-        bridge,queue,_,sent=await self.make_bridge(lambda _:None)
-        for _ in range(20):
-            await queue.put((bridge.target,b'\x80\x60encrypted-placeholder'))
-            await asyncio.sleep(.005)
-        self.assertEqual(sent,[QUERY])
-        self.assertTrue(all(not task.done() for task in bridge.tasks))
+        # A loaded Windows runner can suspend the test for longer than 30 ms.
+        # Advance logical media time explicitly instead of testing its scheduler.
+        clock=[0]
+        with patch('stream_relay.time',SimpleNamespace(monotonic=lambda:clock[0],time=time.time)):
+            bridge,queue,_,sent=await self.make_bridge(lambda _:None)
+            for _ in range(20):
+                clock[0]+=.005
+                await queue.put((bridge.target,b'\x80\x60encrypted-placeholder'))
+                await asyncio.sleep(.005)
+            self.assertEqual(sent,[QUERY])
+            self.assertTrue(all(not task.done() for task in bridge.tasks))
+            await bridge.close()
 
     async def test_dead_established_path_is_closed_once_and_schedules_recovery(self):
         bridge,_,_,sent=await self.make_bridge(lambda _:None)
@@ -115,7 +121,9 @@ class MediaLivenessTests(unittest.IsolatedAsyncioTestCase):
         bridge,_,_,_=await self.make_bridge(lambda attempt:reply() if attempt<=120 else None)
         # Accelerate 120 quiet checks (one hour at the production 30s cadence),
         # then blackhole the association without closing its SOCKS control TCP.
-        bridge.path_check_interval=.002;bridge.path_check_timeout=.015
+        # Probe response deadlines must exceed the Windows clock resolution;
+        # otherwise a healthy reply can be counted as loss on a busy runner.
+        bridge.path_check_interval=.002;bridge.path_check_timeout=.3
         await self.until(lambda:any(task.done() for task in bridge.tasks))
         errors=[task.exception() for task in bridge.tasks if task.done()]
         self.assertEqual([type(error).__name__ for error in errors],['MediaPathTimeout'])

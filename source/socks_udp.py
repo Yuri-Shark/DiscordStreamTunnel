@@ -45,8 +45,37 @@ def unpack_packet(data):
     host=str(ipaddress.ip_address(data[4:4+length]))
     return (host,struct.unpack('!H',data[4+length:6+length])[0]),data[6+length:]
 
-class PacketQueue(asyncio.DatagramProtocol):
-    def __init__(self): self.queue=asyncio.Queue(maxsize=1024);self.drops=0;self.stats=None
+class DatagramFlowControl(asyncio.DatagramProtocol):
+    def __init__(self):
+        self.writable=asyncio.Event();self.writable.set();self.closed=False;self.stats=None
+        self.write_timeout=2
+    def pause_writing(self):
+        # asyncio's UDP transport has another queue beyond our bounded queues.
+        # In particular, Windows overlapped sends can accumulate there even
+        # when sendto() returns immediately. Honor its high/low water marks.
+        self.writable.clear()
+        if self.stats is not None:self.stats['udpSendBackpressure']=self.stats.get('udpSendBackpressure',0)+1
+    def resume_writing(self):self.writable.set()
+    def connection_lost(self,error):
+        self.closed=True;self.writable.set()
+    async def drain(self):
+        if not self.writable.is_set():
+            # wait_for can swallow cancellation racing with resume on Python
+            # 3.10. Keep cancellation on the sending task itself with wait().
+            waiter=asyncio.create_task(self.writable.wait())
+            try:
+                done,_=await asyncio.wait({waiter},timeout=self.write_timeout)
+                if not done:
+                    if self.stats is not None:self.stats['udpSendTimeouts']=self.stats.get('udpSendTimeouts',0)+1
+                    raise TimeoutError('LocalUDPWriteTimeout') from None
+            finally:
+                waiter.cancel();await asyncio.gather(waiter,return_exceptions=True)
+        if self.closed:raise ConnectionError('Local UDP transport closed')
+
+
+class PacketQueue(DatagramFlowControl):
+    def __init__(self):
+        super().__init__();self.queue=asyncio.Queue(maxsize=1024);self.drops=0
     def connection_made(self,transport):configure_datagram_socket(transport)
     def error_received(self,error):
         if self.stats is not None:self.stats['udpSocketErrors']=self.stats.get('udpSocketErrors',0)+1
@@ -86,6 +115,7 @@ class SocksUDP:
             if transport: transport.close()
             raise
     async def send(self,target,data):
+        await self.protocol.drain()
         self.transport.sendto(pack_packet(target,data),self.relay)
     async def watch_control(self):
         # RFC 1928: closing TCP also terminates the UDP association. UDP
