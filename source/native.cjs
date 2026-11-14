@@ -40,7 +40,7 @@ function start(root){
    lastReason:['first-frame-timeout','video-decode-stalled'].includes(value.lastReason)?value.lastReason:null,
    streams:value.streams.map(stream=>{
     const clean={};
-    for(const name of ['sender','requested'])if(typeof stream?.[name]==='boolean')clean[name]=stream[name];
+    for(const name of ['sender','requested','timeoutPending'])if(typeof stream?.[name]==='boolean')clean[name]=stream[name];
     for(const name of ['frames','packets','packetsLost','decodeErrors','decryptFailures','recoveryAttempts'])if(number(stream?.[name]))clean[name]=stream[name];
     if(['RTC_CONNECTED','RTC_CONNECTING','RTC_DISCONNECTED','NO_ROUTE','AWAITING_ENDPOINT','OTHER'].includes(stream?.state))clean.state=stream.state;
     return clean;

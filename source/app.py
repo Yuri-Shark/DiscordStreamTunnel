@@ -1,6 +1,5 @@
 """GUI installer and hidden stream worker; Python is bundled with this app."""
 import argparse
-import asyncio
 import json
 import os
 from pathlib import Path
@@ -33,8 +32,8 @@ def main():
         if not hasattr(args,name):setattr(args,name,None)
     if args.data_dir:os.environ['DISCORD_STREAM_TUNNEL_DATA']=str(Path(args.data_dir).resolve())
     if args.command=='worker':
-        from stream_relay import main as run
-        asyncio.run(run(args.owner_pid,args.idle_exit));return 0
+        from stream_relay import run_worker
+        run_worker(args.owner_pid,args.idle_exit);return 0
     if args.command=='launch':
         from installation import repair
         from configuration import ROOT

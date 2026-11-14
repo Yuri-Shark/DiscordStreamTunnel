@@ -88,6 +88,12 @@ class PacketQueue(DatagramFlowControl):
 class SocksUDP:
     def __init__(self,reader,writer,transport,protocol,relay):
         self.reader,self.writer,self.transport,self.protocol,self.relay=reader,writer,transport,protocol,relay
+        # A media association normally uses one endpoint for its lifetime.
+        # Re-parsing numeric IP addresses per datagram consumes the relay's
+        # event-loop budget under sustained video/keyframe traffic. Cache only
+        # one validated header in each direction, never media or an endpoint map.
+        self.send_target=None;self.send_header=None
+        self.receive_target=None;self.receive_header=None
     @classmethod
     async def create(cls,port,username,password):
         reader,writer=await asyncio.open_connection('127.0.0.1',port)
@@ -116,7 +122,9 @@ class SocksUDP:
             raise
     async def send(self,target,data):
         await self.protocol.drain()
-        self.transport.sendto(pack_packet(target,data),self.relay)
+        if target!=self.send_target:
+            self.send_header=pack_packet(target,b'');self.send_target=tuple(target)
+        self.transport.sendto(self.send_header+data,self.relay)
     async def watch_control(self):
         # RFC 1928: closing TCP also terminates the UDP association. UDP
         # receive alone would otherwise wait forever after a core failure.
@@ -126,7 +134,12 @@ class SocksUDP:
         while True:
             packet,source=await self.protocol.queue.get()
             if source==self.relay:
-                return unpack_packet(packet)
+                header=self.receive_header
+                if header is not None and packet.startswith(header):
+                    return self.receive_target,packet[len(header):]
+                target,payload=unpack_packet(packet)
+                self.receive_header=packet[:len(packet)-len(payload)];self.receive_target=target
+                return target,payload
     async def close(self):
         self.transport.close();self.writer.close()
         try: await asyncio.wait_for(self.writer.wait_closed(),1)

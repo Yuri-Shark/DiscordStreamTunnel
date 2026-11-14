@@ -1,4 +1,169 @@
-# Análise de conexão e recuperação — 1.5.7
+# Análise de conexão e recuperação — 1.5.8
+
+## Estabilidade UDP e renegociação — 1.5.8
+
+O relato foi confirmado nos dois computadores, com maior frequência no
+outro usuário, que usa Windows 11. O áudio da transmissão continua tocando
+quando a imagem trava. Isso restringe a investigação ao caminho do vídeo,
+mas não distingue sozinho perda, atraso, decodificação ou remetente.
+
+O teste offline `scripts/benchmark_udp.py` usa três processos e sockets
+loopback reais. O gerador e o eco SOCKS executam fora do processo do relay,
+evitando que um produtor no mesmo loop desacelere junto com o consumidor e
+esconda uma fila crescente. O teste não abre Internet, não lê `.conf` e não
+usa a instalação do Discord.
+
+Foi reproduzida saturação do loop Proactor no Windows com o Python 3.14.8
+incluído no instalador: três fluxos, 4.000 datagramas/s de 1.200 bytes por
+fluxo, rajadas de 64, durante 12 segundos, com um segundo final de coleta.
+São aproximadamente 115,2 Mbit/s em cada sentido do teste de eco, uma carga
+sintética alta. Comparação local no mesmo computador:
+
+| Medida | Proactor com codec anterior | Selector com cache de cabeçalho |
+| --- | ---: | ---: |
+| Datagramas enviados | 144.000 | 144.000 |
+| Datagramas recebidos até o fim do teste | 116.418 | 144.000 |
+| Mediana de ida e volta local | 1.106,45 ms | 6,55 ms |
+| Percentil 95 | 1.261,75 ms | 15,79 ms |
+| Maior atraso observado | 1.324,76 ms | 29,24 ms |
+| Tempo de CPU do relay | 10,50 s | 7,62 s |
+
+As filas explícitas registraram zero descartes nos dois casos. Portanto,
+zero descartes nessas filas não comprova baixa latência nem ausência de
+perda nos sockets do sistema. Os datagramas ausentes no prazo não foram
+todos classificados como perda permanente: parte pode estar atrasada.
+Uma comparação anterior com Python 3.10 também favoreceu Selector. O cache
+sozinho melhorou o resultado, mas ainda apresentou saturação; ele não foi
+tratado como solução suficiente. Estes números são de uma execução local
+de laboratório, não de uma chamada real nem de um teste de Internet.
+
+O worker Windows passa a usar `SelectorEventLoop`, mantendo Linux no loop
+padrão. O limite de 512 sockets e a ausência de subprocessos assíncronos
+estão documentados no [Python](https://docs.python.org/3.14/library/asyncio-platforms.html).
+O relay limita sessões e controles a poucas dezenas de sockets e inicia
+o núcleo via `subprocess.Popen`; não depende de pipes ou subprocessos do
+`asyncio`. Python 3.11+ usa `Runner` com `loop_factory`; Python 3.10 seleciona
+o loop temporariamente e restaura a política ao encerrar, inclusive em
+falhas. Os testes verificam UDP real, controle WebSocket e fechamento.
+`eventLoop` aparece no diagnóstico filtrado para confirmar o loop ativo.
+
+O codec SOCKS preserva apenas um cabeçalho validado por sentido, evitando
+converter IPs em cada datagrama. Mudanças de endpoint invalidam o cache;
+origem local, fragmentação e tamanhos continuam validados, e a mídia mantém
+seus bytes e ordem. O cache não cresce com a duração da transmissão.
+
+Também foi reproduzida e corrigida uma falha de renegociação: a ponte só
+aceitava respostas de descoberta UDP com o SSRC da primeira consulta. Uma
+consulta nativa posterior com outro SSRC era enviada, mas sua resposta
+era descartada. Uma resposta antiga de verificação interna ainda podia
+consumir a indicação de consulta nativa pendente. Agora cada resposta é
+associada à consulta nativa ou interna correta, e a última consulta nativa
+confirmada passa a ser usada pelas verificações. O contador filtrado
+`udpDiscoveryRenewals` permite confirmar se isso ocorre numa chamada real.
+O teste de regressão expirava no código anterior e passa com a correção.
+
+Os diagnósticos de recepção também deixam de zerar os contadores quando a
+tela é ocultada: o estado `requested` continua falso e impede reconexões,
+mas os totais nativos de pacotes, perda e decodificação ficam disponíveis
+ao alternar para o instalador ou para este chat para coletar o relatório.
+O monitor de progresso continua observando apenas as camadas solicitadas.
+
+Validação desta revisão: 96 testes Python da edição original, incluindo o
+novo teste do entrypoint real do worker, passaram no Python 3.14.8. Os 75
+testes de transporte, Gateway, recuperação e diagnóstico também passaram
+com Selector no Python 3.10; os quatro testes do worker passaram nos dois
+runtimes. As dez suítes JavaScript passaram. A árvore local contém ainda
+protótipos não versionados da edição independente: a tentativa de executar
+toda essa árvore foi interrompida no encerramento de um servidor de teste
+de `test_selective`, fora desta edição. Os resultados acima se referem à
+edição original e não certificam esses protótipos.
+
+Para repetir o cenário de carga corrigido no Windows, usando o Python do
+ambiente de build:
+
+```powershell
+./.build-venv/Scripts/python.exe -B scripts/benchmark_udp.py --streams 3 --pps 4000 --seconds 12 --burst 64 --selector --output build/udp-benchmark.json
+```
+
+Outra execução com rajadas de 512 datagramas por tela entregou todos os
+24.576 datagramas, com atraso máximo local de 64,7 ms e zero descartes nas
+filas explícitas. Esses testes são reproduções sintéticas, com limites de
+carga e coleta explícitos, sem simular codecs ou perda na Internet.
+
+As mudanças corrigem falhas locais comprovadas e reduzem atraso no cenário
+medido. A causa de todos os travamentos dos dois computadores ainda precisa
+ser confirmada com uma transmissão visível e a revisão nova carregada.
+Para carregar estas mudanças, aplique a versão 1.5.8 e faça uma abertura
+completa do Discord. O diagnóstico deve informar `version=1.5.8` e
+`eventLoop=selector` no Windows. A publicação não implica confirmação de
+estabilidade idêntica em todos os computadores.
+
+## Timeout 2012 após reprodução normal — 1.5.8
+
+O Discord classifica 2012 como timeout de vídeo do espectador, conforme a
+[tabela oficial de erros](https://support.discord.com/hc/en-us/articles/30952914470807-Discord-Audio-and-Video-Error-Codes-Troubleshooting-Guide).
+Esse código não identifica a causa nem prova que o arquivo WireGuard expirou.
+Internet geral funcionando e um `.conf` novo não excluem uma interrupção na
+rota UDP, uma falha de decodificação ou um problema no transmissor.
+
+Foi reproduzida uma falha no monitor da edição com Vencord: ao tratar
+`VIDEO_STREAM_READY_TIMEOUT`, `recoverPlayback` apagava `timeoutPending`
+imediatamente após solicitar a reconexão. Se essa tentativa não recuperasse
+o vídeo, sem outro evento nativo ou pacotes de vídeo avançando, a segunda
+tentativa nunca ocorria. Além disso, uma falha em `getStats()` impedia a
+nova tentativa, e uma consulta que nunca terminasse podia manter o monitor
+bloqueado mesmo após a substituição da conexão nativa.
+
+A correção mantém o timeout pendente até o Discord emitir
+`CLEAR_VIDEO_STREAM_READY_TIMEOUT` ou as estatísticas confirmarem quadros
+novos decodificados. Na conexão substituta, um contador positivo também
+confirma a volta do vídeo, mesmo que o contador anterior fosse maior.
+Estatísticas ausentes, rejeitadas ou pendentes não impedem novas tentativas
+para um timeout explicitamente sinalizado. Cada consulta fica associada à
+conexão e à própria requisição, permitindo monitorar uma conexão nova sem
+esperar pela consulta antiga. Eventos de timeout adiados são descartados
+se já foram resolvidos ou se a conexão/socket mudou antes da execução.
+
+O método `detectVideoTimeouts` também consulta `VideoStreamStore.getTimedoutVideos()`
+a cada cinco segundos. Assim, um 2012 que já estava ativo antes da inscrição
+nos eventos pode iniciar a recuperação automaticamente. Um timeout numa tela
+oculta pode ser detectado quando ela voltar a solicitar vídeo. O erro nativo
+persistido não provoca novas reconexões depois de confirmada a volta dos
+quadros; um evento novo ou a remoção e reaparição do timeout permite detectar
+uma falha posterior. Em versões sem esse store, os eventos continuam ativos.
+
+Continuam valendo duas tentativas por tela a cada cinco minutos, pelo menos
+30 segundos entre tentativas da mesma tela e cinco segundos entre telas.
+Telas ocultas/desativadas continuam protegidas. O monitor não apaga o aviso
+nativo para simular sucesso e não reinicia a voz principal nem o envio
+próprio. `timeoutPending` passa a constar nos diagnósticos filtrados como
+booleano, sem identificadores ou dados de conta.
+
+Validação: o teste do timeout persistente falhou no código anterior
+(`1 !== 2` reconexões) e passa com a correção. Os testes JavaScript cobrem
+também estatísticas ausentes/rejeitadas/pendentes, retomada com contadores
+reiniciados, confirmação nativa, eventos atrasados, telas ocultas e limites.
+Os 65 testes Python de diagnósticos, transporte, estabilidade, conectividade
+e recuperação passaram no Windows com Python 3.10.
+
+Esta alteração integra a versão 1.5.8; os pacotes 1.5.7 não a contêm.
+Com o pacote novo, feche completamente o Discord,
+use **Reparar** e reabra o aplicativo; não é necessário gerar outro `.conf`.
+O `.conf` existente é preservado na atualização por **Reparar**.
+
+A falha de recuperação foi comprovada; não há diagnóstico do computador
+afetado que a confirme como causa do relato. Se o 2012 reaparecer com a
+correção, colete **Verificar** (`data/diagnostico.json`) logo após a falha,
+antes de reiniciar o Discord. Compare `playback.streams` (quadros, pacotes,
+erros e timeout pendente) com `runtime.streams`, contadores e eventos UDP.
+Isso permite distinguir falta de mídia, mídia recebida sem decodificação e
+falha de transporte. Se a rota pelo Proton continuar falhando, faça um teste
+controlado usando um servidor Proton diferente; gerar novamente uma
+configuração para o mesmo servidor não testa outra rota. Se os pacotes de
+vídeo avançarem sem quadros novos, verifique aceleração de vídeo e drivers
+conforme o guia oficial e compare a mesma transmissão em outro cliente.
+Esses testes localizam a causa restante; não são uma garantia de eliminação
+de todos os timeouts do Discord.
 
 ## Travamentos intermitentes, disco e filas de envio — 1.5.7
 

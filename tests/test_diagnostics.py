@@ -25,12 +25,13 @@ class DiagnosticTests(unittest.TestCase):
             base=Path(directory)
             self.assertFalse(playback_snapshot(base)['available'])
             value={'updatedAt':time.time(),'attempts':2,'lastReason':'video-decode-stalled','token':'DO-NOT-SHARE',
-                'streams':[{'sender':False,'requested':True,'frames':42,'packetsLost':5,
+                'streams':[{'sender':False,'requested':True,'timeoutPending':True,'frames':42,'packetsLost':5,
                     'decodeErrors':float('nan'),'decryptFailures':3,'state':'RTC_CONNECTED','userId':'DO-NOT-SHARE'},
                     {'state':'DO-NOT-SHARE','frames':-1}]}
             (base/'playback-status.json').write_text(json.dumps(value),encoding='utf-8')
             report=playback_snapshot(base)
             self.assertFalse(report['stale']);self.assertEqual(report['streams'][0]['frames'],42)
+            self.assertTrue(report['streams'][0]['timeoutPending'])
             self.assertNotIn('DO-NOT-SHARE',json.dumps(report));self.assertNotIn('decodeErrors',report['streams'][0])
             value['updatedAt']=time.time()-30
             (base/'playback-status.json').write_text(json.dumps(value),encoding='utf-8')
@@ -39,6 +40,7 @@ class DiagnosticTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory)
             record={'updatedAt':time.time(),'version':'1.3.0','coreRunning':True,'tunnelReachable':False,
+                'eventLoop':'selector','udpDiscoveryRenewals':2,
                 'lastErrorClass':'MediaStartupTimeout','nonce':'DO-NOT-SHARE','private_key':'DO-NOT-SHARE',
                 'streams':[{'active':True,'localPeerSeen':True,'udpSent':True,'udpReceived':False,
                     'target':'DO-NOT-SHARE','discoveryMs':None}],
@@ -51,6 +53,8 @@ class DiagnosticTests(unittest.TestCase):
             self.assertNotIn('DO-NOT-SHARE',raw)
             self.assertFalse(report['runtime']['stale'])
             self.assertEqual(report['runtime']['lastErrorClass'],'MediaStartupTimeout')
+            self.assertEqual(report['runtime']['eventLoop'],'selector')
+            self.assertEqual(report['runtime']['udpDiscoveryRenewals'],2)
             self.assertEqual(len(report['runtime']['recentEvents']),1)
             self.assertFalse(report['runtime']['streams'][0]['udpReceived'])
 

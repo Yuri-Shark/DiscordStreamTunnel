@@ -47,8 +47,8 @@ existente sem pedir novamente o `.conf`.
 Flatpak e Snap não são cobertos.
 
 ```sh
-tar -xzf DiscordStreamTunnel-1.5.7-linux.tar.gz
-cd DiscordStreamTunnel-1.5.7-linux
+tar -xzf DiscordStreamTunnel-1.5.8-linux.tar.gz
+cd DiscordStreamTunnel-1.5.8-linux
 sh instalar.sh
 ```
 
@@ -59,6 +59,38 @@ com seu usuário normal. Instale Vencord pelas [instruções oficiais](https://v
 No Linux, a interface gráfica é opcional: instale `python3-tk` (Ubuntu) ou
 `tk` (CachyOS/Arch) e execute `python3 source/app.py --gui` dentro da pasta
 extraída. A instalação por terminal continua funcionando sem Tk.
+
+## O que mudou na 1.5.8
+
+- O worker Windows usa um loop de rede que reduziu o acúmulo de UDP sob
+  carga nos testes locais. O cabeçalho SOCKS validado também é reutilizado,
+  reduzindo o processamento repetido de endereços por pacote.
+- Uma nova descoberta UDP com outro identificador nativo recebe a resposta
+  correta. Respostas antigas de verificações internas não consomem essa
+  solicitação nem são entregues ao Discord como uma descoberta nova.
+- A recepção com timeout de vídeo do espectador (2012) tenta reconectar a
+  tela automaticamente e mantém a falha pendente até confirmar que o vídeo
+  voltou. Estatísticas ausentes ou travadas não impedem novas tentativas.
+- Timeouts já ativos também são detectados pela consulta local ao estado
+  nativo a cada cinco segundos, aproveitando o monitor existente.
+- Consultas e eventos de conexões antigas não interrompem a conexão nova.
+  Continuam valendo duas tentativas por tela a cada cinco minutos, com pelo
+  menos 30 segundos entre tentativas e cinco segundos entre telas.
+- Telas ocultas continuam protegidas contra reconexões. Seus contadores de
+  diagnóstico agora são preservados ao alternar de janela. **Verificar**
+  inclui `eventLoop`, `udpDiscoveryRenewals` e `timeoutPending`.
+
+No teste offline de carga com o Python incluído no instalador, o maior
+atraso local caiu de aproximadamente 1,3 segundo para 29 ms, com 144 mil
+datagramas entregues no prazo. Isso mede o relay local, não a Internet nem
+a reprodução real. As falhas locais reproduzidas foram corrigidas; causas
+externas de perda e problemas de decodificação continuam possíveis.
+
+Para aplicar, use a atualização assinada e faça uma abertura completa do
+Discord. Na atualização manual, extraia o pacote **1.5.8**, feche o Discord
+e clique em **Reparar** no instalador novo. O `.conf` é preservado.
+Se o problema reaparecer, use **Verificar** logo após o erro, antes de
+reiniciar, e obtenha `data/diagnostico.json`.
 
 ## O que mudou na 1.5.7
 

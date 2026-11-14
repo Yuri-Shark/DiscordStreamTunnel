@@ -172,7 +172,7 @@ class LocalDatagrams(DatagramFlowControl):
         if b.peer is None: b.peer=addr
         if addr!=b.peer: return
         if len(data)==74 and data[:4]==b'\x00\x01\x00\x46':
-            b.native_discovery_pending=True
+            b.native_discovery_pending=True;b.native_discovery_packet=data
             if b.discovery_packet is None:
                 b.discovery_packet=data;b.discovery_started=time.monotonic();b.discovery_pending.set()
         try: b.queue.put_nowait(data)
@@ -188,7 +188,7 @@ class MediaBridge:
         self.discovery_packet=None;self.discovery_started=None;self.discovery_ms=None
         self.discovery_pending=asyncio.Event();self.discovery_done=asyncio.Event()
         self.startup_timeout=8
-        self.last_down_at=None;self.discovery_endpoint=None;self.native_discovery_pending=False
+        self.last_down_at=None;self.discovery_endpoint=None;self.native_discovery_pending=False;self.native_discovery_packet=None
         self.path_response=asyncio.Event();self.path_check_interval=30;self.path_check_timeout=8
     @classmethod
     async def create(cls,settings,target,stats):
@@ -260,7 +260,10 @@ class MediaBridge:
             discovery=len(data)==74 and data[:4]==b'\x00\x02\x00\x46'
             forward=True
             if discovery:
-                if self.discovery_packet is None or data[4:8]!=self.discovery_packet[4:8]:continue
+                native=self.native_discovery_packet
+                native_reply=native is not None and data[4:8]==native[4:8]
+                probe_reply=self.discovery_packet is not None and data[4:8]==self.discovery_packet[4:8]
+                if not native_reply and not probe_reply:continue
                 # Keep the external mapping private. A changed NAT mapping
                 # requires fresh Discord negotiation, not a silent endpoint swap.
                 try:endpoint=(str(ipaddress.ip_address(data[8:72].split(b'\0',1)[0].decode('ascii'))),struct.unpack('!H',data[72:74])[0])
@@ -268,11 +271,17 @@ class MediaBridge:
                 if self.discovery_done.is_set():
                     if endpoint is not None and self.discovery_endpoint is not None and endpoint!=self.discovery_endpoint:
                         raise MediaEndpointChanged('UDPMappingChanged')
-                    forward=self.native_discovery_pending
                 else:
                     self.discovery_endpoint=endpoint
                     self.discovery_ms=round((time.monotonic()-self.discovery_started)*1000);self.discovery_done.set()
-                self.native_discovery_pending=False
+                # Native discovery may change its SSRC within an association.
+                # An old internal probe response must neither consume that
+                # pending request nor be delivered as its answer to Discord.
+                forward=native_reply and self.native_discovery_pending
+                if forward:
+                    if self.discovery_packet[4:8]!=native[4:8]:
+                        self.stats['udpDiscoveryRenewals']=self.stats.get('udpDiscoveryRenewals',0)+1
+                    self.discovery_packet=native;self.native_discovery_pending=False
             if forward:
                 await self.local_protocol.drain()
                 self.transport.sendto(data,self.peer)
@@ -302,7 +311,7 @@ class Relay:
         self.gateway_clients=set()
         self.stats={'openedControls':0,'activeControls':0,'controlUpBytes':0,'controlDownBytes':0,
             'udpUpBytes':0,'udpDownBytes':0,'udpUpPackets':0,'udpDownPackets':0,'udpQueueDrops':0,
-            'udpReceiveQueueDrops':0,'udpMalformedPackets':0,'udpDiscoveryRetries':0,'controlRetries':0,
+            'udpReceiveQueueDrops':0,'udpMalformedPackets':0,'udpDiscoveryRetries':0,'udpDiscoveryRenewals':0,'controlRetries':0,
             'mediaStartupTimeouts':0,'mediaResets':0,'coreRestarts':0,'lastUdpDownAt':None,'lastErrorClass':None}
         self.stats.update(udpPathChecks=0,udpPathProbes=0,mediaPathTimeouts=0,mediaPathChanges=0)
         self.stats['udpSocketErrors']=0
@@ -421,8 +430,12 @@ class Relay:
     def health(self):
         recent_media=self.stats['lastUdpDownAt'] is not None and time.time()-self.stats['lastUdpDownAt']<30
         reachable=True if recent_media else self.tunnel_reachable if self.tunnel_checked_at is not None and time.time()-self.tunnel_checked_at<60 else None
+        try:loop=asyncio.get_running_loop()
+        except RuntimeError:loop=None
+        event_loop='selector' if isinstance(loop,asyncio.SelectorEventLoop) else 'proactor' if type(loop).__name__=='ProactorEventLoop' else 'other'
         return {'service':'DiscordStreamTunnel','protocolVersion':1,'pid':os.getpid(),'ownerPID':self.owner_pid,'configurationReady':(BASE/'private-core.json').exists(),'coreRunning':self.core.running,
-            'version':VERSION,'buildRevision':'stream-recovery-20261106','warmupMs':self.warmup_ms,
+            'version':VERSION,'buildRevision':'stream-stability-20261113','warmupMs':self.warmup_ms,
+            'eventLoop':event_loop,
             'keepWarm':bool(self.owner_pid),'lastWarmupAgeSeconds':None if self.warmed_at is None else round(time.monotonic()-self.warmed_at,1),
             'stopping':self.stopping,'coreGeneration':self.generation,
             'tunnelReachable':reachable,'lastTunnelCheckAt':self.tunnel_checked_at,
@@ -782,9 +795,28 @@ async def main(owner_pid=None,idle_exit=False):
         await relay.close();owner.close()
         for signum in signals:asyncio.get_running_loop().remove_signal_handler(signum)
 
+def run_worker(owner_pid=None,idle_exit=False):
+    # Windows IOCP adds a completion/future for each loopback UDP read/write.
+    # Sustained video can saturate that loop and accumulate seconds of media
+    # without overflowing our queues. This bounded worker needs only sockets:
+    # at most 16 media associations plus 8 controls, well below select's 512
+    # socket limit. The core is managed with Popen, not asyncio subprocesses.
+    if os.name!='nt':return asyncio.run(main(owner_pid,idle_exit))
+    runner=getattr(asyncio,'Runner',None)
+    if runner is not None:
+        with runner(loop_factory=asyncio.SelectorEventLoop) as instance:
+            return instance.run(main(owner_pid,idle_exit))
+    # Python 3.10 has no Runner/loop_factory. Restore the process policy after
+    # asyncio.run performs its normal task, generator and executor cleanup.
+    previous=asyncio.get_event_loop_policy()
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    try:return asyncio.run(main(owner_pid,idle_exit))
+    finally:asyncio.set_event_loop_policy(previous)
+
+
 if __name__=='__main__':
     import argparse
     parser=argparse.ArgumentParser();parser.add_argument('--owner-pid',type=int);parser.add_argument('--idle-exit',action='store_true')
     args=parser.parse_args()
-    try: asyncio.run(main(args.owner_pid,args.idle_exit))
+    try: run_worker(args.owner_pid,args.idle_exit)
     except KeyboardInterrupt: pass

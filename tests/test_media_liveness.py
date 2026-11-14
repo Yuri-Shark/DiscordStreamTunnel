@@ -109,6 +109,41 @@ class MediaLivenessTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([type(error).__name__ for error in errors],['MediaEndpointChanged'])
         self.assertEqual(delivered,[reply()],'a changed address cannot be silently injected into negotiated media')
 
+    async def test_new_native_discovery_id_is_answered_without_consuming_an_old_probe_reply(self):
+        bridge,queue,delivered,sent=await self.make_bridge(lambda _:None)
+        bridge.tasks[-1].cancel();await asyncio.gather(bridge.tasks[-1],return_exceptions=True)
+        query=QUERY[:4]+struct.pack('!I',99)+QUERY[8:]
+        response=reply()[:4]+query[4:8]+reply()[8:]
+        forwarded=asyncio.Event()
+        def sendto(data,peer):
+            delivered.append(data)
+            if data==response:forwarded.set()
+        bridge.transport.sendto=sendto
+        async def send(target,data):
+            sent.append(data)
+            if data==query:
+                # A pending path-check reply can arrive during native discovery.
+                await queue.put((target,reply()))
+                await queue.put((target,response))
+        bridge.socks.send=send
+        LocalDatagrams(bridge).datagram_received(query,bridge.peer)
+        await asyncio.wait_for(forwarded.wait(),1)
+        self.assertEqual(delivered,[reply(),response],'only the reply to the current native request reaches Discord')
+        self.assertEqual(bridge.discovery_packet,query,'later checks must use the most recently confirmed discovery id')
+        self.assertEqual(bridge.stats['udpDiscoveryRenewals'],1)
+        self.assertFalse(bridge.native_discovery_pending)
+
+    async def test_native_discovery_change_cannot_authorize_other_local_peers(self):
+        bridge,_,delivered,sent=await self.make_bridge(lambda _:None)
+        bridge.tasks[-1].cancel();await asyncio.gather(bridge.tasks[-1],return_exceptions=True)
+        before=len(sent)
+        other=('127.0.0.1',bridge.peer[1]+1)
+        LocalDatagrams(bridge).datagram_received(QUERY[:4]+struct.pack('!I',99)+QUERY[8:],other)
+        await asyncio.sleep(0)
+        self.assertEqual(len(sent),before);self.assertTrue(all(packet==QUERY for packet in sent))
+        self.assertEqual(delivered,[reply()])
+        self.assertEqual(bridge.discovery_packet,QUERY)
+
     async def test_bridge_close_cancels_pending_checks_and_sends_no_later_packets(self):
         bridge,_,_,sent=await self.make_bridge(lambda _:None)
         await self.until(lambda:len(sent)>1)

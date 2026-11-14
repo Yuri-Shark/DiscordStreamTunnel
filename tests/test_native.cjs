@@ -18,13 +18,14 @@ async function main(){try{
  // Simulate a disk stalled by scanning/flush without blocking the renderer.
  // Reports arriving meanwhile must not race over the same temporary file.
  Object.defineProperty(nativeFs,'promises',{configurable:true,value:{...fs.promises,async writeFile(...args){writes++;await writeGate;return originalWrite(...args);}}});
- const reporting=bridge.reportPlayback({attempts:1,lastReason:'video-decode-stalled',token:'DO-NOT-SHARE',streams:[{sender:false,requested:true,frames:42,packets:100,decodeErrors:NaN,state:'RTC_CONNECTED',userId:'DO-NOT-SHARE'}]});
+ const reporting=bridge.reportPlayback({attempts:1,lastReason:'video-decode-stalled',token:'DO-NOT-SHARE',streams:[{sender:false,requested:true,timeoutPending:true,frames:42,packets:100,decodeErrors:NaN,state:'RTC_CONNECTED',userId:'DO-NOT-SHARE'}]});
  try{
   assert.equal(writes,1);assert.equal(fs.existsSync(path.join(temp,'data','playback-status.json')),false);
   await bridge.reportPlayback({attempts:99,streams:[]});assert.equal(writes,1,'slow reports must not queue more disk writes');
  }finally{releaseWrite();await reporting;Object.defineProperty(nativeFs,'promises',{configurable:true,value:{...nativeFs.promises,writeFile:originalWrite}});}
  const playback=fs.readFileSync(path.join(temp,'data','playback-status.json'),'utf8');
  assert(!playback.includes('DO-NOT-SHARE'));assert(!playback.includes('decodeErrors'));assert.equal(JSON.parse(playback).streams[0].frames,42);
+ assert.equal(JSON.parse(playback).streams[0].timeoutPending,true);
  const store={constructor:{displayName:'StreamRTCConnectionStore'},getRTCConnections:()=>({}),addChangeListener(){},removeChangeListener(){}};
  const renderer=vm.createContext({URL,URLSearchParams,crypto:require('crypto'),setTimeout,Vencord:{Webpack:{findStore(){throw TypeError('Reflect.get called on non-object');},cache:{stream:{exports:{store}}}}}});renderer.window=renderer;
  await vm.runInContext(scripts[0],renderer);

@@ -20,8 +20,15 @@ from socks_udp import SocksUDP,PacketQueue,pack_packet,unpack_packet,configure_d
 from stream_relay import MediaBridge,Relay,StreamSession,ready_target,sfu_target,request_details,valid_target
 
 class DatagramEcho(asyncio.DatagramProtocol):
+    discovery=False
     def connection_made(self,transport): self.transport=transport;configure_datagram_socket(transport)
-    def datagram_received(self,data,addr): self.transport.sendto(data,addr)
+    def datagram_received(self,data,addr):
+        if self.discovery:
+            target,payload=unpack_packet(data)
+            if len(payload)==74 and payload[:4]==b'\x00\x01\x00\x46':
+                response=b'\x00\x02\x00\x46'+payload[4:8]+b'203.0.113.1'.ljust(64,b'\0')+struct.pack('!H',50000)
+                data=pack_packet(target,response)
+        self.transport.sendto(data,addr)
 
 class FakeCore:
     running=True
@@ -336,7 +343,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_authenticated_udp_association_and_native_datagrams(self):
         loop=asyncio.get_running_loop()
-        echo,_=await loop.create_datagram_endpoint(DatagramEcho,local_addr=('127.0.0.1',0))
+        echo,echo_protocol=await loop.create_datagram_endpoint(DatagramEcho,local_addr=('127.0.0.1',0))
         udp_port=echo.get_extra_info('sockname')[1]
         errors=[]
         async def socks(reader,writer):
@@ -381,6 +388,17 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(stats.get('udpQueueDrops',0),0)
             self.assertEqual(stats.get('udpReceiveQueueDrops',0),0)
             self.assertEqual(bridge.down_packets,403)
+            # Renegotiation on the same UDP association must accept a new
+            # native discovery SSRC and preserve later encrypted datagrams.
+            echo_protocol.discovery=True
+            for ssrc in (7,99):
+                query=b'\x00\x01\x00\x46'+struct.pack('!I',ssrc)+bytes(66)
+                client.sendto(query,('127.0.0.1',bridge.local_port))
+                received,_=await asyncio.wait_for(client_protocol.queue.get(),2)
+                self.assertEqual(received,b'\x00\x02\x00\x46'+query[4:8]+b'203.0.113.1'.ljust(64,b'\0')+struct.pack('!H',50000))
+            self.assertEqual(stats['udpDiscoveryRenewals'],1)
+            client.sendto(b'encrypted-after-renewal',('127.0.0.1',bridge.local_port))
+            self.assertEqual((await asyncio.wait_for(client_protocol.queue.get(),2))[0],b'encrypted-after-renewal')
             # Re-identify to the same SFU with a new native Discord UDP socket.
             # It must receive replies through a fresh bridge, not the old peer.
             settings={'socksPort':server.sockets[0].getsockname()[1],'nonce':'synthetic'}

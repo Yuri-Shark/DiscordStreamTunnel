@@ -8,11 +8,42 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock,patch
 
-from socks_udp import PacketQueue,SocksUDP,create_loopback_endpoint,unpack_packet
+from socks_udp import PacketQueue,SocksUDP,create_loopback_endpoint,pack_packet,unpack_packet
 from stream_relay import MediaBridge,Relay
 
 
 class StreamStabilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_socks_stable_destination_reuses_header_and_preserves_each_datagram(self):
+        protocol=PacketQueue();sent=[]
+        socks=SocksUDP(None,None,SimpleNamespace(sendto=lambda packet,peer:sent.append(packet)),protocol,('127.0.0.1',19885))
+        targets=[('8.8.8.8',50000)]*20+[('2001:4860:4860::8888',50001)]*20+[('8.8.8.8',50000)]
+        payloads=[index.to_bytes(4,'big')+bytes([index])*1196 for index in range(len(targets))]
+        with patch('socks_udp.pack_packet',wraps=pack_packet) as encode:
+            for target,payload in zip(targets,payloads):await socks.send(target,payload)
+            self.assertEqual(encode.call_count,3,'stable media must not reparse its destination on every packet')
+        self.assertEqual(sent,[pack_packet(target,payload) for target,payload in zip(targets,payloads)])
+
+    async def test_socks_receive_cache_validates_sources_fragments_and_endpoint_changes(self):
+        protocol=PacketQueue();socks=SocksUDP(None,None,None,protocol,('127.0.0.1',19885))
+        first=('8.8.8.8',50000);second=('2001:4860:4860::8888',50001)
+        with patch('socks_udp.unpack_packet',wraps=unpack_packet) as decode:
+            for index in range(20):
+                payload=index.to_bytes(4,'big')+bytes(1196)
+                protocol.datagram_received(pack_packet(first,payload),socks.relay)
+                self.assertEqual(await socks.receive(),(first,payload))
+            self.assertEqual(decode.call_count,1,'stable receive headers are parsed once')
+            # A matching header from another socket is still untrusted.
+            protocol.datagram_received(pack_packet(first,b'wrong-source'),('127.0.0.1',19886))
+            protocol.datagram_received(pack_packet(first,b'right-source'),socks.relay)
+            self.assertEqual(await socks.receive(),(first,b'right-source'))
+            fragmented=bytearray(pack_packet(first,b'encrypted'));fragmented[2]=1
+            for bad in (bytes(fragmented),pack_packet(first,b'')[:7],b'bad'):
+                protocol.datagram_received(bad,socks.relay)
+                with self.assertRaises(ValueError):await socks.receive()
+            for target in (second,first):
+                protocol.datagram_received(pack_packet(target,b'new-endpoint'),socks.relay)
+                self.assertEqual(await socks.receive(),(target,b'new-endpoint'))
+
     async def test_socks_send_waits_for_transport_capacity_and_preserves_order(self):
         protocol=PacketQueue();sent=[];advanced=asyncio.Event()
         def sendto(packet,relay):
@@ -101,7 +132,8 @@ class StreamStabilityTests(unittest.IsolatedAsyncioTestCase):
             for payload in payloads:await socks.send(('8.8.8.8',50000),payload)
             self.assertEqual(await asyncio.wait_for(receiving,5),payloads)
             self.assertEqual(incoming.drops,0)
-            if os.name=='nt':self.assertGreater(outgoing.stats.get('udpSendBackpressure',0),0)
+            if type(asyncio.get_running_loop()).__name__=='ProactorEventLoop':
+                self.assertGreater(outgoing.stats.get('udpSendBackpressure',0),0)
         finally:
             receiving.cancel();await asyncio.gather(receiving,return_exceptions=True)
             sender.close();receiver.close()

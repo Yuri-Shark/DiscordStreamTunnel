@@ -8,7 +8,7 @@ import time
 
 NUMBERS={'updatedAt','warmupMs','lastWarmupAgeSeconds','coreGeneration','activeControls','mediaBridges',
     'openedControls','controlUpBytes','controlDownBytes','udpUpBytes','udpDownBytes','udpUpPackets','udpDownPackets',
-    'udpQueueDrops','udpReceiveQueueDrops','udpMalformedPackets','udpDiscoveryRetries','controlRetries',
+    'udpQueueDrops','udpReceiveQueueDrops','udpMalformedPackets','udpDiscoveryRetries','udpDiscoveryRenewals','controlRetries',
     'mediaStartupTimeouts','mediaResets','coreRestarts','lastUdpDownAt','lastTunnelCheckAt',
     'udpPathChecks','udpPathProbes','mediaPathTimeouts','mediaPathChanges','udpSocketErrors','udpSendBackpressure','udpSendTimeouts',
     'activeGatewayControls','openedGatewayControls','gatewayConnectMs','gatewayUpBytes','gatewayDownBytes','gatewayRetries'}
@@ -39,6 +39,7 @@ def runtime_snapshot(base):
         if value is None or type(value) is bool:result[name]=value
     version=record.get('version')
     if isinstance(version,str) and re.fullmatch(r'\d+\.\d+\.\d+',version):result['version']=version
+    if record.get('eventLoop') in ('selector','proactor','other'):result['eventLoop']=record['eventLoop']
     error=record.get('lastErrorClass')
     if error is None or isinstance(error,str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,63}',error):result['lastErrorClass']=error
     updated=result.get('updatedAt')
@@ -105,7 +106,7 @@ def playback_snapshot(base):
     for stream in streams[:8] if isinstance(streams,list) else []:
         if not isinstance(stream,dict):continue
         clean={}
-        for name in ('sender','requested'):
+        for name in ('sender','requested','timeoutPending'):
             if type(stream.get(name)) is bool:clean[name]=stream[name]
         for name in ('frames','packets','packetsLost','decodeErrors','decryptFailures','recoveryAttempts'):
             if number(stream.get(name)):clean[name]=stream[name]
