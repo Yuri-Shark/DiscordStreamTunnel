@@ -15,7 +15,7 @@ VERSION=json.loads((ROOT/'source'/'version.json').read_text())['version']
 output=ROOT/'release';output.mkdir(exist_ok=True)
 GUIDE='LEIA-ME-PRIMEIRO.html'
 def copy_documents(destination):
-    for name in ('README.md','LICENSE.txt','SECURITY.md',GUIDE,'docs/ANALISE-CONEXAO.md'):
+    for name in ('README.md','LICENSE.txt','SECURITY.md',GUIDE,'docs/ANALISE-CONEXAO.md','docs/DIAGNOSTICO-JOGOS-2026-11-14.md'):
         target=destination/name;target.parent.mkdir(parents=True,exist_ok=True)
         shutil.copy2(ROOT/name,target)
 

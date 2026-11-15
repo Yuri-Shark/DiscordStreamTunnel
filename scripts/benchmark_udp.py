@@ -29,7 +29,7 @@ def echo_worker(pipe):
     sock.close()
 
 
-def native_worker(pipe,ports,pps,duration,burst):
+def native_worker(pipe,ports,pps,duration,burst,report_missing=False):
     socks=[]
     for port in ports:
         sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
@@ -55,8 +55,12 @@ def native_worker(pipe,ports,pps,duration,burst):
                 seq,at=struct.unpack('!Id',packet[:12]);received[index].add(seq)
                 delays.append((time.perf_counter()-at)*1000)
     delays.sort()
-    pipe.send({'sent':sent,'received':[len(x) for x in received],
-               'latencyMs':{str(p):round(delays[min(len(delays)-1,int(len(delays)*p/100))],2) for p in [50,95,99,100]} if delays else {}})
+    result={'sent':sent,'received':[len(x) for x in received],
+            'latencyMs':{str(p):round(delays[min(len(delays)-1,int(len(delays)*p/100))],2) for p in [50,95,99,100]} if delays else {}}
+    if report_missing:
+        result['missingBounds']=[{'first':next((i for i in range(total) if i not in seen),None),
+            'last':next((i for i in reversed(range(total)) if i not in seen),None)} for total,seen in zip(sent,received)]
+    pipe.send(result)
     for sock in socks:sock.close()
 
 

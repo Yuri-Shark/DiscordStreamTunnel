@@ -86,6 +86,7 @@ class PacketQueue(DatagramFlowControl):
             if self.stats is not None:self.stats['udpReceiveQueueDrops']=self.stats.get('udpReceiveQueueDrops',0)+1
 
 class SocksUDP:
+    kind='udp'
     def __init__(self,reader,writer,transport,protocol,relay):
         self.reader,self.writer,self.transport,self.protocol,self.relay=reader,writer,transport,protocol,relay
         # A media association normally uses one endpoint for its lifetime.

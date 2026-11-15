@@ -23,6 +23,7 @@ from websockets.exceptions import ConnectionClosed,ProxyError
 
 from configuration import BASE,CORE,local_settings
 from socks_udp import SocksUDP,DatagramFlowControl,configure_datagram_socket,create_loopback_endpoint
+from rtp_diagnostics import Sequences
 
 HOST=re.compile(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.discord\.media\Z')
 GATEWAY_HOST=re.compile(r'gateway(?:-[a-z0-9]+)*\.discord\.gg\Z')
@@ -78,12 +79,12 @@ def media_target(body):
     if not address.is_global or type(port) is not int or not 1024<=port<=65535: raise ValueError('Invalid media destination')
     return str(address),port
 
-def media_message(message,opcode):
+def media_message(message,opcode,require_body=True):
     if not isinstance(message,str): return None
     try: data=json.loads(message)
     except (ValueError,TypeError): return None
     if not isinstance(data,dict) or data.get('op')!=opcode: return None
-    if not isinstance(data.get('d'),dict): raise ValueError('Invalid media control message')
+    if require_body and not isinstance(data.get('d'),dict): raise ValueError('Invalid media control message')
     return data
 
 def ready_target(message):
@@ -190,9 +191,16 @@ class MediaBridge:
         self.startup_timeout=8
         self.last_down_at=None;self.discovery_endpoint=None;self.native_discovery_pending=False;self.native_discovery_packet=None
         self.path_response=asyncio.Event();self.path_check_interval=30;self.path_check_timeout=8
+        self.rtp=Sequences()
     @classmethod
     async def create(cls,settings,target,stats):
-        socks=await asyncio.wait_for(SocksUDP.create(settings['socksPort'],'discord-stream',settings['nonce']),5)
+        factory=SocksUDP
+        mode=settings.get('mediaTransport','udp')
+        if mode not in ('udp','uot2'):raise ValueError('InvalidMediaTransport')
+        if mode=='uot2':
+            from socks_uot import SocksUOT
+            factory=SocksUOT
+        socks=await asyncio.wait_for(factory.create(settings['socksPort'],'discord-stream',settings['nonce']),5)
         socks.protocol.stats=stats
         bridge=cls(socks,target,stats)
         bridge.startup_timeout=settings.get('mediaStartupSeconds',8)
@@ -257,6 +265,7 @@ class MediaBridge:
                 self.stats['udpMalformedPackets']=self.stats.get('udpMalformedPackets',0)+1
                 continue
             if target!=self.target or self.peer is None: continue
+            self.rtp.observe(data)
             discovery=len(data)==74 and data[:4]==b'\x00\x02\x00\x46'
             forward=True
             if discovery:
@@ -434,8 +443,8 @@ class Relay:
         except RuntimeError:loop=None
         event_loop='selector' if isinstance(loop,asyncio.SelectorEventLoop) else 'proactor' if type(loop).__name__=='ProactorEventLoop' else 'other'
         return {'service':'DiscordStreamTunnel','protocolVersion':1,'pid':os.getpid(),'ownerPID':self.owner_pid,'configurationReady':(BASE/'private-core.json').exists(),'coreRunning':self.core.running,
-            'version':VERSION,'buildRevision':'stream-stability-20261113','warmupMs':self.warmup_ms,
-            'eventLoop':event_loop,
+            'version':VERSION,'buildRevision':'local-media-20261114','warmupMs':self.warmup_ms,
+            'eventLoop':event_loop,'localMediaTransport':self.settings.get('mediaTransport','udp'),
             'keepWarm':bool(self.owner_pid),'lastWarmupAgeSeconds':None if self.warmed_at is None else round(time.monotonic()-self.warmed_at,1),
             'stopping':self.stopping,'coreGeneration':self.generation,
             'tunnelReachable':reachable,'lastTunnelCheckAt':self.tunnel_checked_at,
@@ -451,6 +460,8 @@ class Relay:
                 'udpSent':media is not None and getattr(media,'first_up_at',None) is not None,
                 'udpReceived':media is not None and getattr(media,'first_down_at',None) is not None,
                 'discoveryMs':getattr(media,'discovery_ms',None),
+                'localTransport':getattr(getattr(media,'socks',None),'kind','udp') if media else None,
+                'rtp':media.rtp.snapshot() if media is not None and hasattr(media,'rtp') else [],
                 'udpUpPackets':getattr(media,'up_packets',0),'udpDownPackets':getattr(media,'down_packets',0),
                 'lastMediaDownAgeSeconds':None if getattr(media,'last_media_down_at',None) is None else round(time.monotonic()-media.last_media_down_at,1)})
         return result
@@ -508,6 +519,13 @@ class Relay:
             await upstream.close(code if code in (1000,1001) or 3000<=code<=4999 else 4000)
     async def pump_down(self,upstream,client,session):
         async for frame in upstream:
+            if session.media is None and media_message(frame,9,require_body=False) is not None:
+                # A restarted helper has lost the old UDP port and NAT mapping.
+                # RESUMED cannot recreate them. Ask Discord for fresh READY /
+                # discovery instead of accepting a connected but silent stream.
+                self.note('media-resume-missing')
+                await client.close(4006)
+                return
             # A fresh READY invalidates old media even in v10, where the new
             # endpoint arrives later via SFU_UPDATE. Resume (op 9) preserves it.
             fresh=media_message(frame,2) is not None

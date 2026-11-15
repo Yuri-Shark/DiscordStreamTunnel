@@ -60,6 +60,23 @@ No Linux, a interface gráfica é opcional: instale `python3-tk` (Ubuntu) ou
 `tk` (CachyOS/Arch) e execute `python3 source/app.py --gui` dentro da pasta
 extraída. A instalação por terminal continua funcionando sem Tk.
 
+## Correção local em validação — 14/11/2026
+
+O transporte de mídia entre o auxiliar e o núcleo usa UoT v2 por TCP em
+`127.0.0.1`, com uma conexão independente por tela e limites de escrita.
+O trecho externo continua UDP pelo WireGuard. Isso evita a perda reproduzida
+na entrega UDP local ao núcleo sob rajadas de várias transmissões.
+O caminho corrigido não depende de trocar o `.conf`.
+
+Se o auxiliar reiniciar e perder a ponte de mídia, uma retomada do controle
+pede uma nova negociação ao Discord, para não manter uma sessão conectada
+a uma porta local que já foi fechada. Retomadas com ponte válida a preservam.
+
+O travamento original ainda apareceu na validação ao vivo. Esta alteração
+não é uma release publicada nem uma correção completa desse problema.
+Os resultados e limites estão
+no [registro da investigação](docs/DIAGNOSTICO-JOGOS-2026-11-14.md).
+
 ## O que mudou na 1.5.8
 
 - O worker Windows usa um loop de rede que reduziu o acúmulo de UDP sob

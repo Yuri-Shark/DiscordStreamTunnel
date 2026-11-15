@@ -51,6 +51,27 @@ class FakeMedia:
     async def close(self): self.closed=True
 
 class TransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_resumed_after_helper_restart_requests_fresh_media_without_restarting_core(self):
+        @asynccontextmanager
+        async def connector(target, **options):
+            yield FakeUpstream([json.dumps({'op':9,'d':None})])
+        core=FakeCore()
+        relay=Relay({'nonce':'synthetic','socksPort':19885},core=core,connector=connector)
+        with patch.object(relay,'request_recovery') as recovery:
+            try:
+                async with serve(relay.handle,'127.0.0.1',0,process_request=relay.validate) as server:
+                    url='ws://127.0.0.1:'+str(server.sockets[0].getsockname()[1])+'/relay?'+urlencode({
+                        'nonce':'synthetic','target':'wss://test.discord.media/?v=9','sid':'a'*32})
+                    async with connect(url,proxy=None,origin='https://discord.com') as client:
+                        with self.assertRaises(ConnectionClosed) as closed:
+                            await asyncio.wait_for(client.recv(),2)
+                        self.assertEqual(closed.exception.rcvd.code,4006)
+                    recovery.assert_not_called()
+                    self.assertTrue(core.running)
+                    self.assertIn('media-resume-missing',[event['event'] for event in relay.events])
+            finally:
+                await relay.close()
+
     async def test_sending_while_watching_four_streams_and_capacity_bound(self):
         @asynccontextmanager
         async def connector(target,**options):yield FakeUpstream(['ready'])

@@ -16,8 +16,11 @@ def local_settings(base=BASE):
     base.mkdir(parents=True,exist_ok=True)
     path=base/'local-settings.json'
     if not path.exists():
-        path.write_text(json.dumps({'relayPort':19884,'socksPort':19885,'nonce':secrets.token_urlsafe(32),'idleSeconds':40},indent=2),encoding='utf-8')
-    return json.loads(path.read_text(encoding='utf-8'))
+        path.write_text(json.dumps({'relayPort':19884,'socksPort':19885,'nonce':secrets.token_urlsafe(32),'idleSeconds':40,
+            'mediaTransport':'uot2'},indent=2),encoding='utf-8')
+    settings=json.loads(path.read_text(encoding='utf-8'))
+    settings.setdefault('mediaTransport','uot2')
+    return settings
 
 def key(value):
     try:

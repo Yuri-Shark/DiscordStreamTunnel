@@ -10,6 +10,17 @@ from diagnostics import runtime_snapshot,save_report,playback_snapshot,environme
 
 
 class DiagnosticTests(unittest.TestCase):
+    def test_rtp_reports_keep_only_bounded_numeric_header_counters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base=Path(directory)
+            (base/'status.json').write_text(json.dumps({'streams':[{'rtp':[
+                {'pt':105,'packets':123,'sequenceMissing':4,'lateRecovered':2,
+                 'ssrc':'DO-NOT-SHARE','payload':'DO-NOT-SHARE','sequences':[1,2,3]},
+                {'pt':'DO-NOT-SHARE','packets':float('nan')}]}]}),encoding='utf-8')
+            report=runtime_snapshot(base)
+            self.assertEqual(report['streams'][0]['rtp'][0],{'pt':105,'packets':123,'sequenceMissing':4,'lateRecovered':2})
+            self.assertNotIn('DO-NOT-SHARE',json.dumps(report))
+
     def test_environment_distinguishes_windows_builds_without_device_identifiers(self):
         for build in (19045,26200):
             with patch('diagnostics.sys.platform','win32'), \

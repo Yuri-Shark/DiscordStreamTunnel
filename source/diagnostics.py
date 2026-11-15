@@ -11,12 +11,13 @@ NUMBERS={'updatedAt','warmupMs','lastWarmupAgeSeconds','coreGeneration','activeC
     'udpQueueDrops','udpReceiveQueueDrops','udpMalformedPackets','udpDiscoveryRetries','udpDiscoveryRenewals','controlRetries',
     'mediaStartupTimeouts','mediaResets','coreRestarts','lastUdpDownAt','lastTunnelCheckAt',
     'udpPathChecks','udpPathProbes','mediaPathTimeouts','mediaPathChanges','udpSocketErrors','udpSendBackpressure','udpSendTimeouts',
-    'activeGatewayControls','openedGatewayControls','gatewayConnectMs','gatewayUpBytes','gatewayDownBytes','gatewayRetries'}
+    'activeGatewayControls','openedGatewayControls','gatewayConnectMs','gatewayUpBytes','gatewayDownBytes','gatewayRetries',
+    'localMediaSendBackpressure','localMediaSendTimeouts'}
 FLAGS={'configurationReady','coreRunning','stopping','keepWarm','tunnelReachable'}
 STREAM_FLAGS={'active','controlConnected','mediaAllocated','localPeerSeen','udpSent','udpReceived'}
 EVENTS={'warmup-ok','warmup-failed','tunnel-probe-failed','tunnel-probe-ok','core-restart','core-restart-failed',
     'media-reset','control-open','control-close','control-error','control-retry','media-startup-timeout',
-    'media-transport-closed','media-path-timeout','media-path-changed','recovery-error','status-write-error','gateway-open','gateway-close','gateway-error','gateway-retry'}
+    'media-transport-closed','media-resume-missing','media-path-timeout','media-path-changed','recovery-error','status-write-error','gateway-open','gateway-close','gateway-error','gateway-retry'}
 
 
 def number(value):
@@ -40,6 +41,7 @@ def runtime_snapshot(base):
     version=record.get('version')
     if isinstance(version,str) and re.fullmatch(r'\d+\.\d+\.\d+',version):result['version']=version
     if record.get('eventLoop') in ('selector','proactor','other'):result['eventLoop']=record['eventLoop']
+    if record.get('localMediaTransport') in ('udp','uot2'):result['localMediaTransport']=record['localMediaTransport']
     error=record.get('lastErrorClass')
     if error is None or isinstance(error,str) and re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,63}',error):result['lastErrorClass']=error
     updated=result.get('updatedAt')
@@ -52,6 +54,12 @@ def runtime_snapshot(base):
         for name in ('controlConnectMs','discoveryMs','udpUpPackets','udpDownPackets','lastMediaDownAgeSeconds'):
             value=stream.get(name)
             if value is None or number(value):clean[name]=value
+        if stream.get('localTransport') in ('udp','uot2'):clean['localTransport']=stream['localTransport']
+        rtp=stream.get('rtp')
+        if isinstance(rtp,list):
+            clean['rtp']=[{name:value for name,value in row.items()
+                if name in ('pt','packets','sequenceMissing','lateRecovered','duplicates','resets') and number(value)}
+                for row in rtp[:8] if isinstance(row,dict)]
         result['streams'].append(clean)
     result['recentEvents']=[]
     events=record.get('recentEvents',[])
