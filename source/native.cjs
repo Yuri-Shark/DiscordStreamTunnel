@@ -37,14 +37,22 @@ function start(root){
   if(!value||!Array.isArray(value.streams)||value.streams.length>8)return;
   const number=x=>typeof x==='number'&&Number.isFinite(x)&&x>=0&&x<1e18;
   const report={updatedAt:Date.now()/1000,attempts:number(value.attempts)?value.attempts:0,
+   networkDeferrals:number(value.networkDeferrals)?value.networkDeferrals:0,
    lastReason:['first-frame-timeout','video-decode-stalled'].includes(value.lastReason)?value.lastReason:null,
    streams:value.streams.map(stream=>{
     const clean={};
     for(const name of ['sender','requested','timeoutPending'])if(typeof stream?.[name]==='boolean')clean[name]=stream[name];
-    for(const name of ['frames','packets','packetsLost','decodeErrors','decryptFailures','recoveryAttempts'])if(number(stream?.[name]))clean[name]=stream[name];
+    for(const name of ['frames','packets','packetsLost','decodeErrors','decryptFailures','recoveryAttempts','bitrateBps','decodeFps','lossPercent'])if(number(stream?.[name]))clean[name]=stream[name];
     if(['RTC_CONNECTED','RTC_CONNECTING','RTC_DISCONNECTED','NO_ROUTE','AWAITING_ENDPOINT','OTHER'].includes(stream?.state))clean.state=stream.state;
     return clean;
    })};
+  if(value.multiScreen&&typeof value.multiScreen==='object'){
+   report.multiScreen={};
+   if(typeof value.multiScreen.enabled==='boolean')report.multiScreen.enabled=value.multiScreen.enabled;
+   for(const name of ['revision','activeReceivers','limitedReceivers','lowLayerReceivers','unsupportedReceivers','level','pixelBudget','adjustments',
+     'measuredBitrateBps','measuredReceivers','lowerLayerAvailableReceivers','layerInfoPendingReceivers'])
+    if(number(value.multiScreen[name]))report.multiScreen[name]=value.multiScreen[name];
+  }
   playbackReportPending=true;
   try{const file=path.join(data,'playback-status.json'),temp=file+'.tmp';await fs.promises.writeFile(temp,JSON.stringify(report),{mode:0o600});await fs.promises.rename(temp,file);lastPlaybackReport=Date.now();}catch{}
   finally{playbackReportPending=false;}
@@ -55,7 +63,7 @@ function start(root){
  const notice=require('./update-ui.cjs').start({root,runningVersion:version,repair});
  notice.catch(()=>{});
  require('./update.cjs').check(root,String(process.ppid)).then(()=>notice.then(()=>webFrame.executeJavaScript('window.__discordStreamTunnelUpdateNotice?.refresh()'))).catch(()=>{});
- const runtime=fs.readFileSync(path.join(__dirname,'runtime.template.js'),'utf8').replace('/*__CONFIG__*/null',JSON.stringify({relayPort:settings.relayPort,nonce:settings.nonce}));
+ const runtime=fs.readFileSync(path.join(__dirname,'runtime.template.js'),'utf8').replace('/*__CONFIG__*/null',JSON.stringify({relayPort:settings.relayPort,nonce:settings.nonce,tunnelGateway:settings.tunnelGateway===true,multiStreamOptimization:settings.multiStreamOptimization!==false}));
  // A cold Discord update can populate webpack after the old 15 second window.
  // Webpack exists before its modules are ready. Early findStore calls exhaust
  // Vencord's lazy Flux lookup and break UI plugins for the entire first session.

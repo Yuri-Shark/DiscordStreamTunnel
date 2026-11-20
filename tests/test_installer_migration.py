@@ -8,6 +8,18 @@ import installation
 
 
 class InstallerMigrationTests(unittest.TestCase):
+    def test_new_settings_keep_gateway_direct_and_existing_settings_are_preserved(self):
+        with tempfile.TemporaryDirectory(prefix='dts-settings-') as directory:
+            base=Path(directory)
+            self.assertIs(installation.settings_for(base)['tunnelGateway'],False)
+            path=base/'local-settings.json'
+            for original in ({'relayPort':12345,'nonce':'synthetic'},
+                    {'relayPort':12345,'nonce':'synthetic','tunnelGateway':True}):
+                raw=json.dumps(original,indent=2).encode()
+                path.write_bytes(raw)
+                self.assertEqual(installation.settings_for(base),original)
+                self.assertEqual(path.read_bytes(),raw)
+
     def test_current_package_repairs_old_runtime_and_preserves_private_configuration(self):
         resource=Path(installation.__file__).resolve().parent
         with tempfile.TemporaryDirectory(prefix='dts-upgrade-') as directory:

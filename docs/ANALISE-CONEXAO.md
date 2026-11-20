@@ -1,4 +1,27 @@
-# Análise de conexão e recuperação — 1.5.8
+# Análise de conexão e recuperação — 1.5.9
+
+## Isolamento da conexão principal e várias telas — 1.5.9
+
+O runtime mantém o Gateway principal direto por padrão. Antes, a migração
+automática fechava uma conexão funcionando e podia impedir mensagens,
+presença e entrada em voz quando o túnel falhava. Configurações antigas sem
+`tunnelGateway` também recebem o comportamento corrigido, sem regravar
+chaves ou portas. Somente o booleano `true` ativa o modo avançado anterior.
+
+O teste de regressão reproduziu o fechamento indevido antes da correção.
+Agora verifica auxiliar disponível e indisponível, voz direta, telas pelo
+relay e o modo avançado. O diagnóstico distingue Gateway conectado,
+desconectado e estado indisponível sem consumir buscas lazy de módulos.
+
+O transporte local UoT v2, a recuperação de pontes ausentes e o diagnóstico
+RTP da revisão de 14/11 também integram esta versão. Os pedidos adaptativos
+de qualidade e as reservas durante reconexão estão em
+[MULTIPLAS-TELAS.md](MULTIPLAS-TELAS.md). A reprodução ao vivo ainda apresentou
+perda e travamentos; estas mudanças não comprovam uma solução para falhas
+externas ao relay.
+
+As seções de versões anteriores abaixo são registros históricos. As que
+descrevem migração automática do Gateway não representam o padrão da 1.5.9.
 
 ## Estabilidade UDP e renegociação — 1.5.8
 
@@ -596,12 +619,14 @@ do problema específico relatado pelo usuário que não conseguia assistir.
 ## Como a conexão funciona
 
 1. O preload inicia `native.cjs`, prepara o auxiliar e injeta o runtime no Discord.
-2. O runtime intercepta o Gateway principal e sockets com contexto `stream`.
-   A voz principal continua direta. Cada socket de mídia recebe uma identidade
-   local para retomadas; o Gateway é encaminhado sem interpretar seu conteúdo.
+2. O runtime intercepta sockets com contexto `stream`. O Gateway principal e
+   a voz continuam diretos por padrão. Cada socket de mídia recebe uma identidade
+   local para retomadas. Somente com `tunnelGateway=true` o Gateway também
+   é encaminhado, sem interpretar seu conteúdo.
 3. O auxiliar abre o controle WSS do servidor de mídia através do SOCKS local,
    com saída pelo WireGuard em userspace.
-4. Ao receber `READY` ou `SFU_UPDATE`, cria uma associação SOCKS UDP e substitui
+4. Ao receber `READY` ou `SFU_UPDATE`, cria uma associação SOCKS UoT v2
+   (ou UDP no modo legado) e substitui
    o destino fornecido ao Discord por uma porta de loopback.
 5. O Discord descobre o IP/porta externos e negocia o protocolo. Datagramas de
    mídia seguem pela ponte. A criptografia e a decodificação continuam no Discord.

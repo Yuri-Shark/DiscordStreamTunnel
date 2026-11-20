@@ -1,8 +1,8 @@
 # DiscordStreamTunnel
 
-Integração para encaminhar o controle Gateway e as sessões de compartilhamento
-de tela do Discord por um túnel Proton WireGuard em userspace. A voz principal e os
-demais aplicativos continuam pela conexão normal.
+Integração para encaminhar o controle e a mídia das sessões de compartilhamento
+de tela do Discord por um túnel Proton WireGuard em userspace. Por padrão, o
+Gateway principal, a voz, mensagens e presença continuam pela conexão normal.
 
 O addon deve se limitar ao tunelamento em segundo plano. Os atalhos devem
 preservar o ícone original do Discord e qualquer ícone personalizado pelo
@@ -47,8 +47,8 @@ existente sem pedir novamente o `.conf`.
 Flatpak e Snap não são cobertos.
 
 ```sh
-tar -xzf DiscordStreamTunnel-1.5.8-linux.tar.gz
-cd DiscordStreamTunnel-1.5.8-linux
+tar -xzf DiscordStreamTunnel-1.5.9-linux.tar.gz
+cd DiscordStreamTunnel-1.5.9-linux
 sh instalar.sh
 ```
 
@@ -60,7 +60,30 @@ No Linux, a interface gráfica é opcional: instale `python3-tk` (Ubuntu) ou
 `tk` (CachyOS/Arch) e execute `python3 source/app.py --gui` dentro da pasta
 extraída. A instalação por terminal continua funcionando sem Tk.
 
-## Correção local em validação — 14/11/2026
+## O que mudou na 1.5.9
+
+- Corrige a migração indevida da conexão principal do Discord para o Proton.
+  Uma falha do túnel podia deixar o Discord aparentemente offline e impedir
+  a entrada em voz. O Gateway permanece direto por padrão, inclusive em
+  configurações antigas sem a opção `tunnelGateway`; as telas usam o túnel.
+- Mantém o modo avançado `"tunnelGateway": true` em `data/local-settings.json`
+  para quem precisa do comportamento anterior. Somente o booleano `true`
+  ativa essa opção, que torna mensagens, presença e preparação das chamadas
+  novamente dependentes do túnel. Não substitua o arquivo de configurações.
+- Coordena a qualidade solicitada ao assistir várias telas, conforme a área
+  exibida, as camadas anunciadas e a perda recente. Preserva o orçamento por
+  até 30 segundos durante uma reconexão e espaça novas recepções em 750 ms.
+  Esses pedidos não garantem um limite de banda: o transmissor e o Discord
+  podem manter uma qualidade maior. Veja [os detalhes](docs/MULTIPLAS-TELAS.md).
+- Dá tempo para o ajuste de qualidade atuar antes de reconectar vídeo parado
+  sob perda recente, mantendo a recuperação dos timeouts nativos. O diagnóstico
+  inclui bitrate, FPS decodificado e perda recente, sem credenciais ou mídia.
+
+Para aplicar, use a atualização assinada e faça uma abertura completa do
+Discord. Na atualização manual, extraia o ZIP completo **1.5.9**, encerre o
+Discord e clique em **Reparar** no instalador novo. O `.conf` é preservado.
+
+### Transporte local e recuperação incluídos na 1.5.9
 
 O transporte de mídia entre o auxiliar e o núcleo usa UoT v2 por TCP em
 `127.0.0.1`, com uma conexão independente por tela e limites de escrita.
@@ -72,9 +95,9 @@ Se o auxiliar reiniciar e perder a ponte de mídia, uma retomada do controle
 pede uma nova negociação ao Discord, para não manter uma sessão conectada
 a uma porta local que já foi fechada. Retomadas com ponte válida a preservam.
 
-O travamento original ainda apareceu na validação ao vivo. Esta alteração
-não é uma release publicada nem uma correção completa desse problema.
-Os resultados e limites estão
+O travamento original ainda apareceu na validação ao vivo. A versão corrige
+defeitos locais reproduzidos e otimiza várias telas, mas não garante eliminar
+perdas externas ou todos os travamentos durante jogos. Os resultados estão
 no [registro da investigação](docs/DIAGNOSTICO-JOGOS-2026-11-14.md).
 
 ## O que mudou na 1.5.8

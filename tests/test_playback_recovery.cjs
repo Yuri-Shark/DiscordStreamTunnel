@@ -30,6 +30,31 @@ function fixture({nativeTimeoutStore=false}={}){
 }
 (async()=>{
   {
+    const f=fixture(),{root,row}=f.add('network-loss');await f.tick();
+    for(let i=0;i<7;i++){row.packetsReceived+=100;row.packetsLost+=50;await f.tick();}
+    assert.equal(root.reconnects,0,'packet-loss starvation must get a bounded grace before decoder recovery');
+    assert.equal(f.ctx.__discordProtonStreams.status().playback.networkDeferrals,1);
+    for(let i=0;i<5;i++){row.packetsReceived+=100;row.packetsLost+=50;await f.tick();}
+    assert.equal(root.reconnects,1,'a grace period must not suppress recovery indefinitely');
+    f.remove();
+  }
+  {
+    const f=fixture(),{root,row}=f.add('measured');row.bytesReceived=1000;await f.tick();
+    row.bytesReceived+=500000;row.packetsReceived+=100;row.packetsLost+=25;row.framesDecoded+=100;await f.tick();
+    let stream=f.ctx.__discordProtonStreams.status().playback.streams[0];
+    assert.equal(stream.bitrateBps,800000);assert.equal(stream.decodeFps,20);assert.equal(stream.lossPercent,20);
+    root._connection.getStats=async()=>{throw Error('unavailable');};await f.tick(20000);
+    stream=f.ctx.__discordProtonStreams.status().playback.streams[0];
+    assert.equal(stream.bitrateBps,undefined,'stale rates must not be reported as live measurements');
+    assert.equal(stream.decodeFps,undefined);f.remove();
+  }
+  {
+    const f=fixture(),{root,row}=f.add('explicit-timeout');await f.tick();
+    row.packetsReceived+=100;row.packetsLost+=100;await f.tick();
+    f.timeout({mediaContext:'stream',streamKey:'explicit-timeout'});
+    assert.equal(root.reconnects,1,'explicit native first-frame failures retain prompt recovery');f.remove();
+  }
+  {
     const f=fixture(),{root,row}=f.add('hidden-diagnostics');
     row.framesDecoded=150;row.packetsReceived=1000;row.packetsLost=37;await f.tick();
     root._goLiveQualityManager.resolutionWidth=0;await f.tick();

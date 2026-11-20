@@ -17,9 +17,10 @@ def local_settings(base=BASE):
     path=base/'local-settings.json'
     if not path.exists():
         path.write_text(json.dumps({'relayPort':19884,'socksPort':19885,'nonce':secrets.token_urlsafe(32),'idleSeconds':40,
-            'mediaTransport':'uot2'},indent=2),encoding='utf-8')
+            'mediaTransport':'uot2','tunnelGateway':False},indent=2),encoding='utf-8')
     settings=json.loads(path.read_text(encoding='utf-8'))
     settings.setdefault('mediaTransport','uot2')
+    settings.setdefault('tunnelGateway',False)
     return settings
 
 def key(value):

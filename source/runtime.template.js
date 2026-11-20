@@ -26,8 +26,14 @@
   const wrapped = new Map();
   const watchedRoots = new Map();
   const playback = new Map();
+  const qualityControls = new Map();
+  const receiverReservations = new Map();
+  const multiScreen = {revision:3,enabled:config.multiStreamOptimization !== false,activeReceivers:0,limitedReceivers:0,
+    lowLayerReceivers:0,unsupportedReceivers:0,level:0,pixelBudget:0,adjustments:0};
+  let qualityBadSamples=0,qualityGoodSamples=0;
   let playbackTimer = null, playbackDispatcher = null, videoStreamStore = null, lastPlaybackRecovery = -Infinity;
-  const recovery = {attempts:0, lastReason:null};
+  const recovery = {attempts:0, lastReason:null,networkDeferrals:0};
+  let nextReceiverOpen=0;
   let enabled = true, automatic = false, constructions = 0, lastError = null;
   let videoGuard = 'waiting', guardAttempts = 0;
   function applyVideoGuard() {
@@ -70,11 +76,19 @@
     } catch { return false; }
   }
   function gatewayStatus() {
-    let socket; try { socket = gatewayStore?.getSocket()?.webSocket; } catch {}
-    return {...gateway, throughRelay:!!socket?.url?.startsWith(gatewayBase+'?'), connected:socket?.readyState === 1};
+    let socket; try {
+      // Read an already-loaded store without triggering Vencord's lazy lookup.
+      gatewayStore ||= loaded(value => value?.constructor?.displayName === 'GatewayConnectionStore'
+        && typeof value.getSocket === 'function');
+      socket = gatewayStore?.getSocket()?.webSocket;
+    } catch {}
+    return {...gateway, routingEnabled:config.tunnelGateway === true,
+      throughRelay:!!socket?.url?.startsWith(gatewayBase+'?'), connected:socket ? socket.readyState === 1 : null};
   }
   function startGateway() {
-    if (!enabled || !automatic || gatewayStarting || typeof window.DiscordProtonStreamsNative?.ensureHelper !== 'function') return;
+    // Voice setup, messages and presence depend on the main Gateway. Keep it
+    // independent of the stream tunnel unless the user explicitly opts in.
+    if (config.tunnelGateway !== true || !enabled || !automatic || gatewayStarting || typeof window.DiscordProtonStreamsNative?.ensureHelper !== 'function') return;
     gatewayStore ||= findStore('GatewayConnectionStore', value => value && typeof value.getSocket === 'function');
     const retry = () => { if (enabled && automatic && ++gatewayAttempts < 60) {gatewayTimer = setTimeout(startGateway,1000);gatewayTimer?.unref?.();} };
     if (!gatewayStore) { if(W.cache || W.fluxStores)retry();return; }
@@ -133,6 +147,27 @@
       return record.open.apply(this,factoryArgs);
     };
     record.open = function (...factoryArgs) {
+      // Independent receive connections otherwise request their first keyframe
+      // together. Space new openings; never delay voice or the user's sender.
+      if (enabled && automatic && !root.isStreamSender() && !record.renewed && !record.opening
+        && (!record.startupScheduled || record.openTimer!=null)) {
+        record.pendingOpen={self:this,args:factoryArgs};
+        if (record.openTimer!=null) return;
+        record.startupScheduled=true;
+        const now=Date.now(), start=Math.max(now,nextReceiverOpen);nextReceiverOpen=start+750;
+        if (start>now) {
+          record.openTimer=setTimeout(()=>{
+            record.openTimer=null;const pending=record.pendingOpen;record.pendingOpen=null;
+            if (!pending || !enabled || !automatic || !record.ready || wrapped.get(socket)!==record || root._socket!==socket
+              || !Object.values(store.getRTCConnections()).includes(root) || socket.connectionState===0) return;
+            record.opening=true;
+            try {record.open.apply(pending.self,pending.args);} catch {lastError='SocketFactoryError';}
+            finally {record.opening=false;}
+          },start-now);
+          return;
+        }
+        record.pendingOpen=null;
+      }
       const previous = window.WebSocket, expected = new URL(this.url).origin;
       const StreamSocket = new Proxy(previous, {
         construct(Target, args) {
@@ -162,7 +197,10 @@
       record.socket = socket;
       // Native connect() assigns the socket and opens it in the same call.
       // Attach before its first WebSocket, including for stream senders.
-      try { attach(root); } catch (error) { lastError = error?.name ?? 'RuntimeError'; }
+      try {
+        attach(root);
+        if (enabled && automatic && multiScreen.enabled && !root.isStreamSender()) watchQuality(root);
+      } catch (error) { lastError = error?.name ?? 'RuntimeError'; }
     };
     Object.defineProperty(root, '_socket', {get: record.get, set: record.set,
       enumerable: descriptor?.enumerable ?? true, configurable: true});
@@ -187,10 +225,13 @@
       const activeSockets = new Set(roots.map(x => x._socket));
       for (const [socket, record] of wrapped) {
         if (!activeSockets.has(socket)) {
+          if (record.openTimer!=null) window.clearTimeout?.(record.openTimer);
+          record.pendingOpen=null;
           if (socket.createWebSocket === record.replacement) socket.createWebSocket = record.original;
           wrapped.delete(socket);
         }
       }
+      if (!roots.some(root=>root.context==='stream' && !root.isStreamSender())) nextReceiverOpen=0;
       for (const root of roots) {
         attach(root);
         const socket = root._socket, record = wrapped.get(socket);
@@ -212,13 +253,177 @@
           }, 0);
         }
       }
+      optimizeScreens(roots);
     } catch (error) { lastError = error?.name ?? 'RuntimeError'; }
+  }
+  function qualityHook(record,name,replacement) {
+    const descriptor=Object.getOwnPropertyDescriptor(record.manager,name), original=record.manager[name];
+    if (typeof original!=='function' || descriptor && (!descriptor.configurable || !descriptor.writable)) return false;
+    record.methods.push({name,descriptor,original,replacement});record.manager[name]=replacement;return true;
+  }
+  function releaseQuality(root,record,refresh=false) {
+    qualityControls.delete(root);
+    const q=record.manager;
+    for (const method of record.methods) if (q[method.name]===method.replacement) {
+      if (method.descriptor) Object.defineProperty(q,method.name,method.descriptor);
+      else delete q[method.name];
+    }
+    if (q.videoStream===record.selected && record.nativeStream) q.videoStream=record.nativeStream;
+    if (refresh && root._goLiveQualityManager===q && root.state==='RTC_CONNECTED') {
+      try {q.update();} catch {lastError='StreamQualityRestoreFailed';}
+    }
+  }
+  function watchQuality(root) {
+    const q=root._goLiveQualityManager;
+    let record=qualityControls.get(root);
+    if (record?.manager===q) return record;
+    const previous=record;
+    if (record) releaseQuality(root,record);
+    if (!q || typeof q.emit!=='function' || typeof q.update!=='function') return null;
+    record={manager:q,methods:[],cap:previous?.cap??Infinity,lower:previous?.lower??false,layers:[],layersSeen:false,nativeStream:q.videoStream,
+      selected:null,sample:null,previous:null};
+    const originalEmit=q.emit;
+    if (!qualityHook(record,'emit',function(event,...args) {
+      // Keep Discord's natural dimensions/zoom intact, including zero pixels
+      // for hidden tiles. Only bound the request emitted to the SFU/sender.
+      const wants=args[0];
+      if (event==='requested-streams-update' && Number.isFinite(record.cap) && wants?.pixelCounts) {
+        const pixels={...wants.pixelCounts};
+        for (const ssrc of Object.keys(pixels)) if (numeric(pixels[ssrc]) && pixels[ssrc]>0) {
+          pixels[ssrc]=Math.min(pixels[ssrc],record.cap);
+        }
+        args[0]={...wants,pixelCounts:pixels};
+      }
+      return originalEmit.call(this,event,...args);
+    })) return null;
+    const originalInfo=q.updateAudioAndVideoStreamInfo, originalRequest=q.requestStream;
+    if (typeof originalInfo==='function' && typeof originalRequest==='function') {
+      qualityHook(record,'updateAudioAndVideoStreamInfo',function(audio,layers,...args) {
+        record.layersSeen=Array.isArray(layers);
+        record.layers=Array.isArray(layers)?layers.filter(layer=>layer?.active && numeric(layer.quality)):[];
+        record.nativeStream=record.layers[0];
+        return originalInfo.call(this,audio,layers,...args);
+      });
+      qualityHook(record,'requestStream',function(...args) {
+        // Select only layers actually advertised by this sender. Never invent
+        // an SSRC or pause a screen to create the appearance of lower load.
+        const native=record.nativeStream;
+        const lower=record.lower && native && record.layers.filter(layer=>layer.quality<native.quality)
+          .sort((a,b)=>a.quality-b.quality)[0];
+        if (lower || record.selected && this.videoStream===record.selected) this.videoStream=lower || native;
+        record.selected=lower || null;
+        return originalRequest.apply(this,args);
+      });
+    }
+    qualityControls.set(root,record);return record;
+  }
+  function optimizeScreens(roots,measure=false) {
+    const currentRoots=Object.values(store.getRTCConnections());
+    roots=roots.filter(root=>currentRoots.includes(root));
+    for (const [root,record] of qualityControls) if (!roots.includes(root) || !multiScreen.enabled || !automatic) {
+      releaseQuality(root,record,!multiScreen.enabled || !automatic);
+    }
+    const receivers=roots.filter(root=>root.context==='stream' && !root.isStreamSender());
+    for (const root of receiverReservations.keys()) if (!receivers.includes(root) || !enabled || !automatic || !multiScreen.enabled) {
+      receiverReservations.delete(root);
+    }
+    if (enabled && automatic && multiScreen.enabled) for (const root of receivers) watchQuality(root);
+    // Native reconnect can clear the socket, replace the manager and zero its
+    // dimensions before the next routed connection. Preserve the last visible
+    // demand through that gap, bounded to 30s; removed/paused screens release it.
+    const now=Date.now(), demands=[];
+    for (const root of receivers) {
+      const q=root._goLiveQualityManager, previous=receiverReservations.get(root);
+      const zoom=numeric(q?.zoom) && q.zoom>0?q.zoom:1;
+      const value=numeric(q?.resolutionWidth) && numeric(q?.resolutionHeight)
+        ?q.resolutionWidth*q.resolutionHeight*zoom*zoom:0;
+      const pixels=numeric(value) && value>0?value:0;
+      const requested=currentReceiver(root), connected=root.state==='RTC_CONNECTED';
+      if (requested && connected) {
+        receiverReservations.set(root,{manager:q,pixels,until:now+30000});
+        demands.push({root,pixels});continue;
+      }
+      const explicitPause=q?.incomingVideoEnabled===false || q?.videoStream?.active===false
+        || (q===previous?.manager && numeric(q?.resolutionWidth) && numeric(q?.resolutionHeight) && !pixels);
+      if (!connected && previous && previous.until>now && !explicitPause) {
+        demands.push({root,pixels:pixels || previous.pixels});
+      } else if (requested && root.state!=='RTC_DISCONNECTED') demands.push({root,pixels});
+      else receiverReservations.delete(root);
+    }
+    const active=demands.map(row=>row.root);
+    multiScreen.activeReceivers=active.length;
+    if (!enabled || !automatic || !multiScreen.enabled || active.length<2) {
+      multiScreen.level=0;qualityBadSamples=0;qualityGoodSamples=0;
+    } else if (measure) {
+      let packets=0,lost=0,healthy=true;
+      for (const root of active) {
+        if (root.state!=='RTC_CONNECTED') {healthy=false;continue;}
+        const record=qualityControls.get(root), sample=playback.get(root)?.sample;
+        if (!record || !sample || !sample.requested || record.sample===sample) {healthy=false;continue;}
+        record.sample=sample;
+        const previous=record.previous;record.previous={connection:root._connection,...sample};
+        if (!previous || previous.connection!==root._connection || !numeric(sample.packets) || !numeric(sample.packetsLost)
+          || sample.packets<previous.packets || sample.packetsLost<previous.packetsLost) {healthy=false;continue;}
+        if (sample.frames<=previous.frames || sample.packets<=previous.packets) healthy=false;
+        packets+=sample.packets-previous.packets;lost+=sample.packetsLost-previous.packetsLost;
+      }
+      // Cumulative counters must be differenced. Missing stats, reset counters,
+      // static video and tiny samples cannot establish congestion or recovery.
+      if (packets+lost>=50) {
+        const fraction=lost/(packets+lost);
+        qualityBadSamples=fraction>=.08?qualityBadSamples+1:0;
+        qualityGoodSamples=healthy && fraction<=.02?qualityGoodSamples+1:0;
+        if (qualityBadSamples>=2 && multiScreen.level<3) {multiScreen.level++;qualityBadSamples=0;qualityGoodSamples=0;}
+        if (qualityGoodSamples>=6 && multiScreen.level>0) {multiScreen.level--;qualityGoodSamples=0;}
+      } else {qualityBadSamples=0;qualityGoodSamples=0;}
+    }
+    const total=demands.reduce((sum,row)=>sum+row.pixels,0);
+    const limited=enabled && automatic && multiScreen.enabled && active.length>=2;
+    // One shared 720p pixel budget, weighted by displayed area. Grid tiles get
+    // less than a focused/zoomed tile; loss reduces the aggregate request.
+    const budget=limited?Math.min(1280*720,total/Math.sqrt(active.length))*[1,.65,.4,.25][multiScreen.level]:0;
+    multiScreen.pixelBudget=Math.floor(budget);multiScreen.limitedReceivers=0;
+    multiScreen.lowLayerReceivers=0;multiScreen.unsupportedReceivers=0;
+    multiScreen.measuredBitrateBps=0;multiScreen.measuredReceivers=0;
+    multiScreen.lowerLayerAvailableReceivers=0;multiScreen.layerInfoPendingReceivers=0;
+    for (const root of active) if (!qualityControls.has(root)) multiScreen.unsupportedReceivers++;
+    for (const root of active) {
+      const playbackRecord=playback.get(root), sample=playbackRecord?.sample, record=qualityControls.get(root);
+      if (sample && numeric(sample.bitrateBps) && numeric(playbackRecord.sampleAt)
+        && Date.now()-playbackRecord.sampleAt>=0 && Date.now()-playbackRecord.sampleAt<=15000) {
+        multiScreen.measuredBitrateBps+=sample.bitrateBps;multiScreen.measuredReceivers++;
+      }
+      if (record && !record.layersSeen) multiScreen.layerInfoPendingReceivers++;
+      if (record?.layers.some(layer=>layer.quality<(record.nativeStream?.quality??0))) multiScreen.lowerLayerAvailableReceivers++;
+    }
+    const plans=[...qualityControls].map(([root,record])=>{
+      const demand=demands.find(row=>row.root===root && row.pixels>0);
+      const cap=limited && demand?Math.max(1,Math.floor(Math.min(demand.pixels,budget*demand.pixels/total))):Infinity;
+      // Use separate focus thresholds so near-equal tiles do not alternate
+      // layers as fractional layout sizes change by a pixel.
+      const lower=limited && !!demand && (multiScreen.level>=2 || demand.pixels/total<=(record.lower ? .6 : .55));
+      return {root,record,demand,cap,lower};
+    });
+    const rebalance=plans.some(({record,cap,lower})=>lower!==record.lower || cap!==record.cap
+      && (!Number.isFinite(cap) || !Number.isFinite(record.cap) || Math.abs(cap-record.cap)/Math.max(1,record.cap)>=.1));
+    for (const {root,record,demand,cap,lower} of plans) {
+      if (Number.isFinite(cap)) multiScreen.limitedReceivers++;
+      // Rebalance all shares together: accepting only the larger increases
+      // while suppressing small decreases would exceed the aggregate budget.
+      if (rebalance && (cap!==record.cap || lower!==record.lower)) {
+        record.cap=cap;record.lower=lower;multiScreen.adjustments++;
+        if (root.state==='RTC_CONNECTED') try {record.manager.update();} catch {lastError='StreamQualityUpdateFailed';}
+      }
+      if (record.selected) multiScreen.lowLayerReceivers++;
+      if (!limited || !demand) {record.previous=null;record.sample=null;}
+    }
   }
   function playbackRecord(root) {
     let record = playback.get(root);
     if (!record) {
       record = {connection:null, previous:null, stalledSince:null, attempts:[], nextRetry:0, pending:null,
-        timeoutPending:false, timeoutConnection:null, timeoutVersion:0, nativeTimeoutSeen:false, sample:null};
+        networkCongestedUntil:0,networkDeferralSince:null,
+        timeoutPending:false, timeoutConnection:null, timeoutVersion:0, nativeTimeoutSeen:false, sample:null,sampleAt:null};
       playback.set(root,record);
     }
     return record;
@@ -242,11 +447,19 @@
   function recoverPlayback(root, reason) {
     if (!currentReceiver(root) || typeof root.reconnect !== 'function') return;
     const record = playbackRecord(root), now = Date.now();
+    if (reason==='video-decode-stalled' && record.networkCongestedUntil>now) {
+      // Missing video under active packet loss is not proof that the decoder
+      // failed. Give the quality controller time before requesting another
+      // large initial keyframe. The grace is bounded, not an infinite veto.
+      if (record.networkDeferralSince===null) {record.networkDeferralSince=now;recovery.networkDeferrals++;}
+      if (now-record.networkDeferralSince<30000) return;
+    }
     record.attempts = record.attempts.filter(at => now-at < 300000);
     // A server/encoder outage must not create a reconnect storm across screens.
     if (now < record.nextRetry || now-lastPlaybackRecovery < 5000 || record.attempts.length >= 2) return;
     record.attempts.push(now);record.nextRetry=now+30000;lastPlaybackRecovery=now;
     record.stalledSince=null;record.previous=null;
+    record.networkDeferralSince=null;
     recovery.attempts++;recovery.lastReason=reason;
     try {root.reconnect();} catch {lastError='PlaybackReconnectFailed';}
     // Keep Discord's timeout/error visible until its native first-frame event
@@ -336,6 +549,8 @@
       const record=playbackRecord(root), connection=root._connection;
       if (record.connection !== connection || root.state !== 'RTC_CONNECTED') {
         record.connection=connection;record.previous=null;record.stalledSince=null;record.sample=null;record.pending=null;
+        record.sampleAt=null;
+        record.networkCongestedUntil=0;record.networkDeferralSince=null;
       }
       // A native timeout is evidence even if stats are missing or never settle.
       // Do not let a request from a destroyed connection block its successor.
@@ -358,13 +573,29 @@
         const sample={sender,requested:selected.length>0,frames:sum(sender?'framesEncoded':'framesDecoded'),
           packets:sum(sender?'packetsSent':'packetsReceived'),packetsLost:sum('packetsLost'),
           decodeErrors:sum('framesDecodeErrors'),decryptFailures:sum(sender?'encryptFailureCount':'decryptFailureCount')};
+        const byteKey=sender?'bytesSent':'bytesReceived';
+        if (selected.length && selected.every(row=>numeric(row[byteKey]))) sample.bytes=sum(byteKey);
         // Hidden/unrequested video must not trigger recovery, but clearing
         // its counters used to erase loss/decoder evidence from diagnostics
         // as soon as the user switched away to collect a report.
         record.sample={...sample,frames:sum(sender?'framesEncoded':'framesDecoded',videos),
           packets:sum(sender?'packetsSent':'packetsReceived',videos),packetsLost:sum('packetsLost',videos),
           decodeErrors:sum('framesDecodeErrors',videos),decryptFailures:sum(sender?'encryptFailureCount':'decryptFailureCount',videos)};
-        const previous=record.previous, now=Date.now();record.previous=sample;
+        record.sampleAt=Date.now();
+        const previous=record.previous, now=Date.now();record.previous={...sample,at:now};
+        const elapsed=previous?now-previous.at:0;
+        if (previous?.requested && sample.requested && elapsed>0 && elapsed<=15000) {
+          if (numeric(sample.bytes) && numeric(previous.bytes) && sample.bytes>=previous.bytes)
+            record.sample.bitrateBps=Math.round((sample.bytes-previous.bytes)*8000/elapsed);
+          if (!sender && sample.frames>=previous.frames)
+            record.sample.decodeFps=Math.round((sample.frames-previous.frames)*10000/elapsed)/10;
+          const packets=sample.packets-previous.packets, lost=sample.packetsLost-previous.packetsLost;
+          if (!sender && packets>=0 && lost>=0 && packets+lost>=50) {
+            record.sample.lossPercent=Math.round(lost/(packets+lost)*1000)/10;
+            if (lost/(packets+lost)>=.08) record.networkCongestedUntil=now+15000;
+            else if (sample.frames>previous.frames) {record.networkCongestedUntil=0;record.networkDeferralSince=null;}
+          }
+        }
         // Counters reset on a new native media connection. A positive decoded
         // count there also confirms recovery; historical frames here do not.
         if (!sender && sample.requested && selected.every(row => numeric(row.framesDecoded)) && sample.frames>0
@@ -373,6 +604,7 @@
         // Static/paused video and unrequested simulcast layers are healthy.
         // Only continuous incoming VIDEO without decoded progress is evidence.
         if (!comparable || !previous?.requested || sample.frames !== previous.frames || sample.packets <= previous.packets) {
+          record.networkDeferralSince=null;
           record.stalledSince=null;return;
         }
         record.stalledSince ??= now;
@@ -386,13 +618,18 @@
         }
       }
     }));
+    try {optimizeScreens(roots,true);} catch {lastError='StreamQualitySampleFailed';}
     try {window.DiscordProtonStreamsNative?.reportPlayback?.(playbackStatus());} catch {}
   }
   function playbackStatus() {
-    return {...recovery,streams:[...playback.entries()].map(([root,record]) => ({
-      state:['RTC_CONNECTED','RTC_CONNECTING','RTC_DISCONNECTED','NO_ROUTE','AWAITING_ENDPOINT'].includes(root.state)?root.state:'OTHER',
-      ...(record.sample || {sender:root.isStreamSender(),requested:false}),timeoutPending:record.timeoutPending,recoveryAttempts:record.attempts.length
-    }))};
+    return {...recovery,multiScreen:{...multiScreen,lowLayerReceivers:[...qualityControls.values()].filter(record=>record.selected).length},streams:[...playback.entries()].map(([root,record]) => {
+      const sample={...(record.sample || {sender:root.isStreamSender(),requested:false})};
+      if (!numeric(record.sampleAt) || Date.now()-record.sampleAt<0 || Date.now()-record.sampleAt>15000) {
+        for (const name of ['bitrateBps','decodeFps','lossPercent']) delete sample[name];
+      }
+      return {state:['RTC_CONNECTED','RTC_CONNECTING','RTC_DISCONNECTED','NO_ROUTE','AWAITING_ENDPOINT'].includes(root.state)?root.state:'OTHER',
+        ...sample,timeoutPending:record.timeoutPending,recoveryAttempts:record.attempts.length};
+    })};
   }
   function status() {
     const roots = Object.values(store.getRTCConnections()).filter(x => x.context === 'stream');
@@ -400,7 +637,9 @@
       gateway:gatewayStatus(),
       playback:playbackStatus(),
       streams: roots.map(x => ({state: x.state, sender: x.isStreamSender(), throughRelay: !!x._socket?.webSocket?.url?.startsWith(base)})),
-      scope: 'Controle Gateway e compartilhamento de tela pelo tunel; audio principal e demais aplicativos permanecem diretos.'};
+      scope: config.tunnelGateway === true
+        ? 'Controle Gateway e compartilhamento de tela pelo tunel; audio principal e demais aplicativos permanecem diretos.'
+        : 'Somente controle e midia das telas pelo tunel; Gateway principal, voz e demais aplicativos permanecem diretos.'};
   }
   function testReceivers() {
     scan();
@@ -421,8 +660,14 @@
     try {playbackDispatcher?.unsubscribe('VIDEO_STREAM_READY_TIMEOUT',onVideoTimeout);} catch {}
     try {playbackDispatcher?.unsubscribe('CLEAR_VIDEO_STREAM_READY_TIMEOUT',onVideoReady);} catch {}
     playback.clear();
+    receiverReservations.clear();
+    for (const [root,record] of qualityControls) releaseQuality(root,record,true);
     if (gatewayReplacement && window.WebSocket === gatewayReplacement) window.WebSocket = gatewayOriginal;
     for (const [socket, record] of wrapped) if (socket.createWebSocket === record.replacement) socket.createWebSocket = record.original;
+    for (const record of wrapped.values()) {
+      if (record.openTimer!=null) window.clearTimeout?.(record.openTimer);
+      record.pendingOpen=null;
+    }
     for (const [root, record] of watchedRoots) unwatchRoot(root, record);
     wrapped.clear(); delete window[key];
     if (options.reconnectReceivers) for (const root of Object.values(store.getRTCConnections())) {
@@ -431,6 +676,8 @@
     return {removed: true};
   }
   store.addChangeListener(scan);
-  window[key] = {status, testarRecepcaoAtual: testReceivers, automatico(value = true) {automatic = !!value; if(automatic){startGateway();startPlaybackMonitor();}scan(); return status();}, remover: remove};
+  window[key] = {status, testarRecepcaoAtual: testReceivers,
+    otimizarTelas(value=true) {multiScreen.enabled=!!value;scan();return status();},
+    automatico(value = true) {automatic = !!value; if(automatic){startGateway();startPlaybackMonitor();}scan(); return status();}, remover: remove};
   applyVideoGuard(); scan(); return status();
 })()

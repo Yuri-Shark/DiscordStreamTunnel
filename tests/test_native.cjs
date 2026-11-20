@@ -5,20 +5,25 @@ async function main(){try{
  fs.mkdirSync(path.join(temp,'data'));const preload=path.join(temp,'preload.js');fs.writeFileSync(preload,'// Vencord initial\n');
  fs.writeFileSync(path.join(temp,'installation.json'),JSON.stringify({preload,worker:'must-not-spawn'}));
  fs.writeFileSync(path.join(temp,'active.json'),JSON.stringify({version:'1.1.0'}));
- fs.writeFileSync(path.join(temp,'data','private-core.json'),'{}');fs.writeFileSync(path.join(temp,'data','local-settings.json'),JSON.stringify({relayPort:12345,nonce:'synthetic'}));
+ fs.writeFileSync(path.join(temp,'data','private-core.json'),'{}');fs.writeFileSync(path.join(temp,'data','local-settings.json'),JSON.stringify({relayPort:12345,nonce:'synthetic',multiStreamOptimization:false}));
  let bridge,updateChecks=0,originalInvoked=0;const scripts=[];
  const ipc={invoke(channel){originalInvoked++;if(channel==='VencordBuild')fs.writeFileSync(preload,'// Vencord updated upstream\n');return Promise.resolve({ok:true,value:true});}};
  const http={get(_options,callback){const request={once(){return this;},destroy(){}};queueMicrotask(()=>callback({statusCode:200,on(event,fn){if(event==='data')fn(JSON.stringify({service:'DiscordStreamTunnel',protocolVersion:1,configurationReady:true,version:JSON.parse(fs.readFileSync(path.join(source,'version.json'))).version,ownerPID:4321}));if(event==='end')fn();return this;}}));return request;}};
  const modules={fs:{...fs,promises:fs.promises},path,crypto:require('crypto'),child_process:{spawn(){throw Error('Unexpected spawn');}},http,'electron/renderer':{ipcRenderer:ipc,webFrame:{executeJavaScript:script=>{scripts.push(script);return Promise.resolve();}},contextBridge:{exposeInMainWorld(_name,value){bridge=value;}}},'./repair.cjs':repair,'./update.cjs':{check(){updateChecks++;return Promise.resolve();}},'./update-ui.cjs':{start(){return Promise.resolve();}}};
  const context=vm.createContext({require:name=>modules[name],__dirname:source,module:{exports:{}},location:{protocol:'https:',hostname:'discord.com'},process:{ppid:4321,platform:'win32',env:{}},setTimeout,URL});
  vm.runInContext(fs.readFileSync(path.join(source,'native.cjs'),'utf8'),context);context.module.exports.start(temp);
+ assert.ok(scripts[0].includes('"tunnelGateway":false'),'existing settings must default to stream-only routing');
  assert.equal(typeof bridge.ensureHelper,'function');await bridge.ensureHelper();
  let releaseWrite,writes=0;const writeGate=new Promise(resolve=>{releaseWrite=resolve;});
  const nativeFs=modules.fs,originalWrite=fs.promises.writeFile;
  // Simulate a disk stalled by scanning/flush without blocking the renderer.
  // Reports arriving meanwhile must not race over the same temporary file.
  Object.defineProperty(nativeFs,'promises',{configurable:true,value:{...fs.promises,async writeFile(...args){writes++;await writeGate;return originalWrite(...args);}}});
- const reporting=bridge.reportPlayback({attempts:1,lastReason:'video-decode-stalled',token:'DO-NOT-SHARE',streams:[{sender:false,requested:true,timeoutPending:true,frames:42,packets:100,decodeErrors:NaN,state:'RTC_CONNECTED',userId:'DO-NOT-SHARE'}]});
+ const reporting=bridge.reportPlayback({attempts:1,networkDeferrals:1,lastReason:'video-decode-stalled',token:'DO-NOT-SHARE',
+  multiScreen:{enabled:true,activeReceivers:3,limitedReceivers:3,level:1,pixelBudget:599040,adjustments:2,nonce:'DO-NOT-SHARE',unsupportedReceivers:NaN,
+   measuredBitrateBps:800000,measuredReceivers:1,lowerLayerAvailableReceivers:0,layerInfoPendingReceivers:2},
+  streams:[{sender:false,requested:true,timeoutPending:true,frames:42,packets:100,decodeErrors:NaN,state:'RTC_CONNECTED',userId:'DO-NOT-SHARE',
+   bitrateBps:800000,decodeFps:20,lossPercent:5}]});
  try{
   assert.equal(writes,1);assert.equal(fs.existsSync(path.join(temp,'data','playback-status.json')),false);
   await bridge.reportPlayback({attempts:99,streams:[]});assert.equal(writes,1,'slow reports must not queue more disk writes');
@@ -26,10 +31,19 @@ async function main(){try{
  const playback=fs.readFileSync(path.join(temp,'data','playback-status.json'),'utf8');
  assert(!playback.includes('DO-NOT-SHARE'));assert(!playback.includes('decodeErrors'));assert.equal(JSON.parse(playback).streams[0].frames,42);
  assert.equal(JSON.parse(playback).streams[0].timeoutPending,true);
+ assert.equal(JSON.parse(playback).multiScreen.activeReceivers,3);
+ assert.equal(JSON.parse(playback).multiScreen.level,1);
+ assert.equal(JSON.parse(playback).multiScreen.unsupportedReceivers,undefined);
+ assert.equal(JSON.parse(playback).networkDeferrals,1);
+ assert.equal(JSON.parse(playback).multiScreen.measuredBitrateBps,800000);
+ assert.equal(JSON.parse(playback).multiScreen.layerInfoPendingReceivers,2);
+ assert.equal(JSON.parse(playback).streams[0].decodeFps,20);
+ assert.equal(JSON.parse(playback).streams[0].lossPercent,5);
  const store={constructor:{displayName:'StreamRTCConnectionStore'},getRTCConnections:()=>({}),addChangeListener(){},removeChangeListener(){}};
  const renderer=vm.createContext({URL,URLSearchParams,crypto:require('crypto'),setTimeout,Vencord:{Webpack:{findStore(){throw TypeError('Reflect.get called on non-object');},cache:{stream:{exports:{store}}}}}});renderer.window=renderer;
  await vm.runInContext(scripts[0],renderer);
  assert.equal(renderer.__discordProtonStreams.status().automatic,true,'native bootstrap must allow runtime store fallback');
+ assert.equal(renderer.__discordProtonStreams.status().playback.multiScreen.enabled,false,'native startup preserves an explicit optimization opt-out');
  let polls=0;const late=vm.createContext({URL,URLSearchParams,crypto:require('crypto'),setTimeout(fn){polls++;if(polls===170)late.Vencord=renderer.Vencord;queueMicrotask(fn);}});late.window=late;
  await vm.runInContext(scripts[0],late);
  assert.equal(late.__discordProtonStreams.status().automatic,true,'a Discord update taking longer than the old startup window must still initialize');
@@ -59,10 +73,15 @@ async function main(){try{
  assert.equal(typeof fluxLoaded,'function');assert.equal(offline.__discordProtonStreams,undefined);
  offline.Vencord.Webpack.cache={stream:{exports:{store}}};fluxLoaded();
  let timeout;try{await Promise.race([offlineBoot,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(Error('bootstrap waited for Gateway instead of Flux')),1000);})]);}finally{clearTimeout(timeout);}
- assert.equal(offline.__discordProtonStreams.status().automatic,true,'Gateway routing must start before CONNECTION_OPEN');
+ assert.equal(offline.__discordProtonStreams.status().automatic,true,'stream routing must initialize without waiting for CONNECTION_OPEN');
  const result=await ipc.invoke('VencordBuild');assert.equal(result.ok,true);assert.equal(originalInvoked,1);
  assert.ok(fs.readFileSync(preload,'utf8').includes(repair.START));assert.equal(repair.clean(fs.readFileSync(preload,'utf8')),'// Vencord updated upstream\n');
  assert.equal(updateChecks,1);
+ for (const tunnelGateway of [true,'true',1]) {
+  fs.writeFileSync(path.join(temp,'data','local-settings.json'),JSON.stringify({relayPort:12345,nonce:'synthetic',tunnelGateway}));
+  context.module.exports.start(temp);
+  assert.ok(scripts.at(-1).includes('"tunnelGateway":'+String(tunnelGateway===true)),'only an explicit boolean Gateway opt-in must reach the renderer');
+ }
  console.log('OK: native bootstrap repairs Vencord updates, tolerates late webpack initialization and checks signed updates.');
 }finally{if(path.dirname(temp)!==os.tmpdir()||!path.basename(temp).startsWith('dts-native-test-'))throw Error('Unsafe cleanup');fs.rmSync(temp,{recursive:true,force:true});}}
 main().catch(error=>{console.error(error);process.exitCode=1;});

@@ -13,7 +13,7 @@ NUMBERS={'updatedAt','warmupMs','lastWarmupAgeSeconds','coreGeneration','activeC
     'udpPathChecks','udpPathProbes','mediaPathTimeouts','mediaPathChanges','udpSocketErrors','udpSendBackpressure','udpSendTimeouts',
     'activeGatewayControls','openedGatewayControls','gatewayConnectMs','gatewayUpBytes','gatewayDownBytes','gatewayRetries',
     'localMediaSendBackpressure','localMediaSendTimeouts'}
-FLAGS={'configurationReady','coreRunning','stopping','keepWarm','tunnelReachable'}
+FLAGS={'configurationReady','coreRunning','stopping','keepWarm','tunnelReachable','tunnelGateway'}
 STREAM_FLAGS={'active','controlConnected','mediaAllocated','localPeerSeen','udpSent','udpReceived'}
 EVENTS={'warmup-ok','warmup-failed','tunnel-probe-failed','tunnel-probe-ok','core-restart','core-restart-failed',
     'media-reset','control-open','control-close','control-error','control-retry','media-startup-timeout',
@@ -106,9 +106,15 @@ def playback_snapshot(base):
     except (OSError,ValueError):return {'available':False}
     updated=value.get('updatedAt')
     result={'available':True,'stale':not number(updated) or not 0<=time.time()-updated<=20}
-    for name in ('updatedAt','attempts'):
+    for name in ('updatedAt','attempts','networkDeferrals'):
         if number(value.get(name)):result[name]=value[name]
     if value.get('lastReason') in ('first-frame-timeout','video-decode-stalled'):result['lastReason']=value['lastReason']
+    quality=value.get('multiScreen')
+    if isinstance(quality,dict):
+        result['multiScreen']={name:quality[name] for name in ('revision','activeReceivers','limitedReceivers',
+            'lowLayerReceivers','unsupportedReceivers','level','pixelBudget','adjustments','measuredBitrateBps',
+            'measuredReceivers','lowerLayerAvailableReceivers','layerInfoPendingReceivers') if number(quality.get(name))}
+        if type(quality.get('enabled')) is bool:result['multiScreen']['enabled']=quality['enabled']
     result['streams']=[]
     streams=value.get('streams')
     for stream in streams[:8] if isinstance(streams,list) else []:
@@ -116,7 +122,7 @@ def playback_snapshot(base):
         clean={}
         for name in ('sender','requested','timeoutPending'):
             if type(stream.get(name)) is bool:clean[name]=stream[name]
-        for name in ('frames','packets','packetsLost','decodeErrors','decryptFailures','recoveryAttempts'):
+        for name in ('frames','packets','packetsLost','decodeErrors','decryptFailures','recoveryAttempts','bitrateBps','decodeFps','lossPercent'):
             if number(stream.get(name)):clean[name]=stream[name]
         if stream.get('state') in ('RTC_CONNECTED','RTC_CONNECTING','RTC_DISCONNECTED','NO_ROUTE','AWAITING_ENDPOINT','OTHER'):clean['state']=stream['state']
         result['streams'].append(clean)

@@ -69,7 +69,7 @@ def settings_for(base):
     if path.exists():return json.loads(path.read_text())
     relay=free_port()
     settings={'relayPort':relay,'socksPort':free_port((relay,)),'nonce':secrets.token_urlsafe(32),'idleSeconds':40,'warmIdleSeconds':120,
-        'mediaTransport':'uot2'}
+        'mediaTransport':'uot2','tunnelGateway':False}
     atomic_write(path,json.dumps(settings,indent=2).encode())
     return settings
 

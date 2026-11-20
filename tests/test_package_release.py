@@ -23,7 +23,7 @@ class PackageTests(unittest.TestCase):
             shutil.copy2(ROOT/'scripts'/'package_release.py',root/'scripts'/'package_release.py')
             for name in ('README.md','SECURITY.md','LICENSE.txt','instalar.sh',GUIDE):shutil.copy2(ROOT/name,root/name)
             (root/'docs').mkdir()
-            for name in ('ANALISE-CONEXAO.md','DIAGNOSTICO-JOGOS-2026-11-14.md'):
+            for name in ('ANALISE-CONEXAO.md','DIAGNOSTICO-JOGOS-2026-11-14.md','MULTIPLAS-TELAS.md'):
                 shutil.copy2(ROOT/'docs'/name,root/'docs'/name)
             (root/'source'/'version.json').write_text('{"version":"1.3.0"}',encoding='utf-8')
             (root/'source'/'diagnostics.py').write_text('# synthetic module',encoding='utf-8')
@@ -43,6 +43,7 @@ class PackageTests(unittest.TestCase):
                 self.assertEqual(archive.read('DiscordStreamTunnel-1.3.0-Windows-x64/'+GUIDE).replace(b'\r\n',b'\n'),expected)
                 self.assertIn('DiscordStreamTunnel-1.3.0-Windows-x64/docs/ANALISE-CONEXAO.md',archive.namelist())
                 self.assertIn('DiscordStreamTunnel-1.3.0-Windows-x64/docs/DIAGNOSTICO-JOGOS-2026-11-14.md',archive.namelist())
+                self.assertIn('DiscordStreamTunnel-1.3.0-Windows-x64/docs/MULTIPLAS-TELAS.md',archive.namelist())
             with tarfile.open(root/'release'/'DiscordStreamTunnel-1.3.0-linux.tar.gz') as archive:
                 self.assertEqual(archive.extractfile('DiscordStreamTunnel-1.3.0-linux/'+GUIDE).read(),expected)
             html=expected.decode('utf-8')

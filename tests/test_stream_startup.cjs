@@ -107,6 +107,32 @@ async function senderConnectedBeforeStoreNotification(){
   assert.equal(reconnects,1,'healthy sender must not be reconnected again');ctx.__discordProtonStreams.remover();
 }
 
+function receiverBurst(){
+  let now=0,nextId=0;const timers=new Map(),calls=[],roots={},listeners=new Set();
+  class NativeSocket{constructor(url){this.url=url;calls.push({url,at:now});}}
+  const ctx=vm.createContext({WebSocket:NativeSocket,URL,URLSearchParams,crypto,Date:{now:()=>now},
+    setTimeout(fn,delay){const id=++nextId;timers.set(id,{fn,at:now+delay});return id;},clearTimeout:id=>timers.delete(id)});ctx.window=ctx;
+  const make=(key,sender=false,context='stream')=>roots[key]={context,state:'CONNECTING',isStreamSender:()=>sender,
+    _socket:{url:'wss://test.discord.media/',connectionState:1,createWebSocket(){this.webSocket=new ctx.WebSocket(this.url+'?v=10');}}};
+  const a=make('a'),b=make('b'),c=make('c'),sender=make('sender',true),voice=make('voice',false,'default');
+  ctx.Vencord={Webpack:{findStore:()=>({getRTCConnections:()=>roots,addChangeListener:f=>listeners.add(f),removeChangeListener:f=>listeners.delete(f)})}};
+  vm.runInContext(source,ctx);ctx.__discordProtonStreams.automatico(true);
+  a._socket.createWebSocket();b._socket.createWebSocket();c._socket.createWebSocket();
+  b._socket.createWebSocket(); // A second callback must not bypass its pending slot.
+  sender._socket.createWebSocket();voice._socket.createWebSocket();
+  assert.equal(calls.length,3,'only the first receiver, sender and voice open immediately');
+  function advance(to){now=to;for(const [id,timer] of [...timers])if(timer.at<=now){timers.delete(id);timer.fn();}}
+  advance(749);assert.equal(calls.length,3);advance(750);assert.equal(calls.length,4);
+  assert.equal(calls[3].at,750);advance(1500);assert.equal(calls.length,5);assert.equal(calls[4].at,1500);
+  assert.equal(timers.size,0,'duplicate callbacks must not leave extra pending opens');
+  const d=make('d');for(const f of listeners)f();d._socket.createWebSocket();
+  delete roots.d;for(const f of listeners)f();advance(3000);assert.equal(calls.length,5,'closed queued receivers must not open');
+  const e=make('e');for(const f of listeners)f();e._socket.createWebSocket();
+  const g=make('g');for(const f of listeners)f();g._socket.createWebSocket();
+  ctx.__discordProtonStreams.remover();const count=calls.length;advance(10000);
+  assert.equal(calls.length,count,'unloading cancels pending opens');assert.equal(timers.size,0);
+}
+
 (async () => {
   await firstConnection(true);
   await firstConnection(false);
@@ -114,5 +140,6 @@ async function senderConnectedBeforeStoreNotification(){
   await removedWhileStarting();
   await removedWhileStarting(true);
   await senderConnectedBeforeStoreNotification();
+  receiverBurst();
   console.log('OK: sender/receiver startup and reconnections revalidate the helper; voice and cleanup preserved.');
 })().catch(error => {console.error(error); process.exitCode = 1;});

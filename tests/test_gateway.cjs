@@ -1,6 +1,7 @@
 'use strict';
 const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),crypto=require('node:crypto');
-const source=fs.readFileSync(require('node:path').join(__dirname,'../source/runtime.template.js'),'utf8').replace('/*__CONFIG__*/null',JSON.stringify({relayPort:19884,nonce:'synthetic'}));
+const template=fs.readFileSync(require('node:path').join(__dirname,'../source/runtime.template.js'),'utf8');
+const source=template.replace('/*__CONFIG__*/null',JSON.stringify({relayPort:19884,nonce:'synthetic',tunnelGateway:true}));
 async function main(){
  const calls=[],listeners=new Set();let helperReady,starts=0,migrations=0,ready=false;
  class NativeSocket{constructor(url){this.url=url;this.readyState=1;calls.push(url);}close(code){assert.equal(code,4000);migrations++;control.webSocket=new ctx.WebSocket('wss://gateway-us-east1-b.discord.gg/?v=9&encoding=etf&compress=zstd-stream');}}
@@ -45,4 +46,37 @@ async function coldStart(){
  ctx.__discordProtonStreams.remover();assert.equal(ctx.WebSocket,Socket);assert.equal(listeners.size,0);
  console.log('OK: cold startup retries a missing fast-connect socket and migrates it after it becomes available.');
 }
-main().then(coldStart).catch(error=>{console.error(error);process.exitCode=1;});
+async function streamOnlyDefault(){
+ for(const tunnelGateway of [undefined,false,'true'])for(const unavailable of [false,true]){
+  const listeners=new Set(),timers=[];let migrations=0,starts=0,ctx;
+  class Socket{constructor(url){this.url=url;this.readyState=1;}close(){migrations++;}}
+  const gatewayURL='wss://gateway.discord.gg/?v=9&encoding=etf';
+  const control={webSocket:new Socket(gatewayURL),isSessionEstablished:()=>true};
+  const makeSocket=()=>({url:'wss://test.discord.media/',createWebSocket(){this.webSocket=new ctx.WebSocket(this.url+'?v=9');}});
+  const screen={context:'stream',state:'RTC_CONNECTING',isStreamSender:()=>false,_socket:makeSocket()};
+  const voice={context:'default',_socket:makeSocket()};
+  const originalVoice=voice._socket.createWebSocket;
+  const stream={constructor:{displayName:'StreamRTCConnectionStore'},getRTCConnections:()=>({screen,voice}),addChangeListener:f=>listeners.add(f),removeChangeListener:f=>listeners.delete(f)};
+  const gatewayStore={constructor:{displayName:'GatewayConnectionStore'},getSocket:()=>control};
+  ctx=vm.createContext({WebSocket:Socket,URL,URLSearchParams,crypto,
+   setTimeout(callback){timers.push(callback);return{unref(){}};},clearTimeout(){},
+   DiscordProtonStreamsNative:{ensureHelper(){starts++;return unavailable?Promise.reject(Error('HelperUnavailable')):Promise.resolve();}},
+   Vencord:{Webpack:{cache:{stream:{exports:{stream}},gateway:{exports:{gatewayStore}}},findStore(){return null;}}}});ctx.window=ctx;
+  vm.runInContext(template.replace('/*__CONFIG__*/null',JSON.stringify({relayPort:19884,nonce:'synthetic',tunnelGateway})),ctx);
+  ctx.__discordProtonStreams.automatico(true);screen._socket.createWebSocket();
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(migrations,0,'stream-only startup must never close a working main Gateway');
+  assert.equal(ctx.WebSocket,Socket,'stream routing must not install a global Gateway proxy');
+  assert.equal(new ctx.WebSocket(gatewayURL).url,gatewayURL,'Gateway reconnects stay direct even when the helper fails');
+  assert.equal(ctx.__discordProtonStreams.status().gateway.routingEnabled,false);
+  assert.equal(ctx.__discordProtonStreams.status().gateway.connected,true);
+  assert.equal(voice._socket.createWebSocket,originalVoice);voice._socket.createWebSocket();
+  assert.equal(voice._socket.webSocket.url,'wss://test.discord.media/?v=9');
+  if(unavailable){assert.equal(ctx.__discordProtonStreams.status().lastError,'HelperUnavailable');assert.equal(screen._socket.webSocket,undefined);}
+  else assert.equal(new URL(screen._socket.webSocket.url).pathname,'/relay','screens must still use the tunnel');
+  assert.equal(starts,1,'only the screen requests helper readiness');
+  ctx.__discordProtonStreams.remover();assert.equal(listeners.size,0);
+ }
+ console.log('OK: default and legacy settings preserve main Gateway and voice during healthy and failed stream-helper startup.');
+}
+streamOnlyDefault().then(main).then(coldStart).catch(error=>{console.error(error);process.exitCode=1;});

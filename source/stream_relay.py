@@ -443,13 +443,16 @@ class Relay:
         except RuntimeError:loop=None
         event_loop='selector' if isinstance(loop,asyncio.SelectorEventLoop) else 'proactor' if type(loop).__name__=='ProactorEventLoop' else 'other'
         return {'service':'DiscordStreamTunnel','protocolVersion':1,'pid':os.getpid(),'ownerPID':self.owner_pid,'configurationReady':(BASE/'private-core.json').exists(),'coreRunning':self.core.running,
-            'version':VERSION,'buildRevision':'local-media-20261114','warmupMs':self.warmup_ms,
+            'version':VERSION,'buildRevision':'stream-only-multiscreen-20261119','warmupMs':self.warmup_ms,
             'eventLoop':event_loop,'localMediaTransport':self.settings.get('mediaTransport','udp'),
             'keepWarm':bool(self.owner_pid),'lastWarmupAgeSeconds':None if self.warmed_at is None else round(time.monotonic()-self.warmed_at,1),
             'stopping':self.stopping,'coreGeneration':self.generation,
             'tunnelReachable':reachable,'lastTunnelCheckAt':self.tunnel_checked_at,
             'activeControls':self.stats['activeControls'],'mediaBridges':sum(x.media is not None for x in self.sessions.values()),
-            'scope':'Discord Gateway control and screen-stream media; main voice stays direct; no system routes or DNS'}
+            'tunnelGateway':self.settings.get('tunnelGateway') is True,
+            'scope':('Discord Gateway control and screen-stream media; main voice stays direct; no system routes or DNS'
+                if self.settings.get('tunnelGateway') is True else
+                'Screen-stream control and media only; main Gateway and voice stay direct; no system routes or DNS')}
     def stream_diagnostics(self):
         # No URLs, session IDs, tokens, payloads, addresses or media keys.
         result=[]

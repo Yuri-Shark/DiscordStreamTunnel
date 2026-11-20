@@ -248,12 +248,16 @@ class LocalTransportSettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
             self.assertEqual(local_settings(base)['mediaTransport'], 'uot2')
+            self.assertIs(local_settings(base)['tunnelGateway'], False)
             path = base / 'local-settings.json'
             original = {'nonce': 'synthetic', 'socksPort': 50101, 'relayPort': 50102}
             path.write_text(json.dumps(original), encoding='utf-8')
-            self.assertEqual(local_settings(base), dict(original, mediaTransport='uot2'))
+            self.assertEqual(local_settings(base), dict(original, mediaTransport='uot2', tunnelGateway=False))
             self.assertEqual(json.loads(path.read_text()), original)
             original['mediaTransport'] = 'udp'
+            path.write_text(json.dumps(original), encoding='utf-8')
+            self.assertEqual(local_settings(base), dict(original, tunnelGateway=False))
+            original['tunnelGateway'] = True
             path.write_text(json.dumps(original), encoding='utf-8')
             self.assertEqual(local_settings(base), original)
 
