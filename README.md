@@ -47,8 +47,8 @@ existente sem pedir novamente o `.conf`.
 Flatpak e Snap não são cobertos.
 
 ```sh
-tar -xzf DiscordStreamTunnel-1.5.9-linux.tar.gz
-cd DiscordStreamTunnel-1.5.9-linux
+tar -xzf DiscordStreamTunnel-1.5.10-linux.tar.gz
+cd DiscordStreamTunnel-1.5.10-linux
 sh instalar.sh
 ```
 
@@ -59,6 +59,35 @@ com seu usuário normal. Instale Vencord pelas [instruções oficiais](https://v
 No Linux, a interface gráfica é opcional: instale `python3-tk` (Ubuntu) ou
 `tk` (CachyOS/Arch) e execute `python3 source/app.py --gui` dentro da pasta
 extraída. A instalação por terminal continua funcionando sem Tk.
+
+## O que mudou na 1.5.10
+
+- O monitor aguarda a negociação de criptografia DAVE antes de recuperar um
+  timeout de primeiro quadro. Isso evita interromper a própria negociação.
+  A espera é limitada a 60 segundos, com mais cinco segundos para o primeiro
+  quadro após a confirmação; os limites de tentativas continuam ativos.
+- Timeouts atrasados de um vídeo anterior são ignorados ao trocar de
+  transmissão. Consultas de estatísticas do controle anterior também não
+  reiniciam a conexão sucessora.
+- A recuperação aguarda a negociação RTC e a retomada nativa do WebSocket.
+  Intervalos superiores a 15 segundos entre amostras reiniciam a observação,
+  evitando interpretar suspensão ou atraso do monitor como falha contínua.
+- Fechamentos WebSocket definitivos liberam a ponte UDP antes de aceitar um
+  sucessor. Falhas de controle que permitem retomada preservam a ponte.
+- O diagnóstico inclui estado de negociação e contadores de espera e
+  liberação de pontes, sem registrar o autenticador do grupo DAVE.
+
+As instalações com a chave atual, usada desde a 1.4.0, verificam e baixam a
+atualização assinada ao abrir o Discord. O aviso **Reiniciar e aplicar** permite
+ativá-la; também é possível fechar e abrir completamente o Discord depois.
+As configurações Proton e as preferências dos plugins são preservadas.
+Versões 1.2.4 e anteriores ainda precisam da migração manual descrita acima.
+
+Os testes automatizados cobrem as falhas locais corrigidas. Durante o teste
+real, a troca de transmissões voltou a funcionar, mas uma transmissão voltou
+a parar também para outros espectadores e retornou após reinício pelo
+transmissor. O envio e o caminho de distribuição dessa ocorrência ainda
+precisam de diagnóstico; esta versão não garante eliminar todas as quedas.
 
 ## O que mudou na 1.5.9
 

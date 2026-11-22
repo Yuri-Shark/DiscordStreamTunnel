@@ -38,10 +38,11 @@ function start(root){
   const number=x=>typeof x==='number'&&Number.isFinite(x)&&x>=0&&x<1e18;
   const report={updatedAt:Date.now()/1000,attempts:number(value.attempts)?value.attempts:0,
    networkDeferrals:number(value.networkDeferrals)?value.networkDeferrals:0,
+   encryptionDeferrals:number(value.encryptionDeferrals)?value.encryptionDeferrals:0,
    lastReason:['first-frame-timeout','video-decode-stalled'].includes(value.lastReason)?value.lastReason:null,
    streams:value.streams.map(stream=>{
     const clean={};
-    for(const name of ['sender','requested','timeoutPending'])if(typeof stream?.[name]==='boolean')clean[name]=stream[name];
+    for(const name of ['sender','requested','timeoutPending','encryptionPending'])if(typeof stream?.[name]==='boolean')clean[name]=stream[name];
     for(const name of ['frames','packets','packetsLost','decodeErrors','decryptFailures','recoveryAttempts','bitrateBps','decodeFps','lossPercent'])if(number(stream?.[name]))clean[name]=stream[name];
     if(['RTC_CONNECTED','RTC_CONNECTING','RTC_DISCONNECTED','NO_ROUTE','AWAITING_ENDPOINT','OTHER'].includes(stream?.state))clean.state=stream.state;
     return clean;

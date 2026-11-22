@@ -35,11 +35,11 @@ class DiagnosticTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory)
             self.assertFalse(playback_snapshot(base)['available'])
-            value={'updatedAt':time.time(),'attempts':2,'networkDeferrals':1,'lastReason':'video-decode-stalled','token':'DO-NOT-SHARE',
+            value={'updatedAt':time.time(),'attempts':2,'networkDeferrals':1,'encryptionDeferrals':2,'lastReason':'video-decode-stalled','token':'DO-NOT-SHARE',
                 'multiScreen':{'enabled':True,'activeReceivers':3,'level':1,'pixelBudget':599040,
                     'measuredBitrateBps':800000,'layerInfoPendingReceivers':-1,
                     'lowLayerReceivers':float('nan'),'userId':'DO-NOT-SHARE'},
-                'streams':[{'sender':False,'requested':True,'timeoutPending':True,'frames':42,'packetsLost':5,
+                'streams':[{'sender':False,'requested':True,'timeoutPending':True,'encryptionPending':True,'epochAuthenticator':'DO-NOT-SHARE','frames':42,'packetsLost':5,
                     'decodeErrors':float('nan'),'decryptFailures':3,'state':'RTC_CONNECTED','userId':'DO-NOT-SHARE',
                     'bitrateBps':800000,'decodeFps':20,'lossPercent':5},
                     {'state':'DO-NOT-SHARE','frames':-1}]}
@@ -49,6 +49,8 @@ class DiagnosticTests(unittest.TestCase):
             self.assertTrue(report['streams'][0]['timeoutPending'])
             self.assertEqual(report['multiScreen'],{'enabled':True,'activeReceivers':3,'level':1,'pixelBudget':599040,'measuredBitrateBps':800000})
             self.assertEqual(report['networkDeferrals'],1)
+            self.assertEqual(report['encryptionDeferrals'],2)
+            self.assertTrue(report['streams'][0]['encryptionPending'])
             self.assertEqual(report['streams'][0]['bitrateBps'],800000)
             self.assertEqual(report['streams'][0]['decodeFps'],20)
             self.assertEqual(report['streams'][0]['lossPercent'],5)
@@ -60,11 +62,12 @@ class DiagnosticTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             base=Path(directory)
             record={'updatedAt':time.time(),'version':'1.3.0','coreRunning':True,'tunnelReachable':False,
-                'eventLoop':'selector','udpDiscoveryRenewals':2,'tunnelGateway':False,
+                'eventLoop':'selector','udpDiscoveryRenewals':2,'mediaReleases':3,'tunnelGateway':False,
                 'lastErrorClass':'MediaStartupTimeout','nonce':'DO-NOT-SHARE','private_key':'DO-NOT-SHARE',
                 'streams':[{'active':True,'localPeerSeen':True,'udpSent':True,'udpReceived':False,
                     'target':'DO-NOT-SHARE','discoveryMs':None}],
                 'recentEvents':[{'event':'control-error','errorClass':'TimeoutError','at':time.time(),'token':'DO-NOT-SHARE'},
+                    {'event':'media-release','code':1000,'target':'DO-NOT-SHARE'},
                     {'event':'DO-NOT-SHARE'},{'event':['malformed']}]}
             (base/'status.json').write_text(json.dumps(record),encoding='utf-8')
             destination=save_report(base,{'version':'1.3.0','configurationPresent':True,'dataDirectory':'DO-NOT-SHARE'})
@@ -76,7 +79,9 @@ class DiagnosticTests(unittest.TestCase):
             self.assertEqual(report['runtime']['eventLoop'],'selector')
             self.assertEqual(report['runtime']['udpDiscoveryRenewals'],2)
             self.assertIs(report['runtime']['tunnelGateway'],False)
-            self.assertEqual(len(report['runtime']['recentEvents']),1)
+            self.assertEqual(report['runtime']['mediaReleases'],3)
+            self.assertEqual(len(report['runtime']['recentEvents']),2)
+            self.assertEqual(report['runtime']['recentEvents'][1],{'event':'media-release','code':1000})
             self.assertFalse(report['runtime']['streams'][0]['udpReceived'])
 
     def test_missing_invalid_oversized_and_stale_status_are_handled(self):

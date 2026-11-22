@@ -321,7 +321,7 @@ class Relay:
         self.stats={'openedControls':0,'activeControls':0,'controlUpBytes':0,'controlDownBytes':0,
             'udpUpBytes':0,'udpDownBytes':0,'udpUpPackets':0,'udpDownPackets':0,'udpQueueDrops':0,
             'udpReceiveQueueDrops':0,'udpMalformedPackets':0,'udpDiscoveryRetries':0,'udpDiscoveryRenewals':0,'controlRetries':0,
-            'mediaStartupTimeouts':0,'mediaResets':0,'coreRestarts':0,'lastUdpDownAt':None,'lastErrorClass':None}
+            'mediaStartupTimeouts':0,'mediaResets':0,'mediaReleases':0,'coreRestarts':0,'lastUdpDownAt':None,'lastErrorClass':None}
         self.stats.update(udpPathChecks=0,udpPathProbes=0,mediaPathTimeouts=0,mediaPathChanges=0)
         self.stats['udpSocketErrors']=0
         self.stats['udpSendBackpressure']=0
@@ -638,6 +638,14 @@ class Relay:
         finally:
             session.active=False;session.connected=False;session.closed_at=time.monotonic()
             self.stats['activeControls']-=1;self.last_control=time.monotonic()
+            # Only resumable control failures may retain the UDP association.
+            # A retired screen can otherwise keep forwarding for idleSeconds
+            # to a native UDP port that Discord has closed and may reuse.
+            code=getattr(client,'close_code',None)
+            if code in (1000,1001,4006,4009,4014) and session.media is not None:
+                previous=session.media;session.media=None;session.media_target=None
+                with suppress(Exception):await previous.close()
+                self.stats['mediaReleases']+=1;self.note('media-release',code=code)
             session.inactive.set()
 
     async def handle_gateway(self,client):

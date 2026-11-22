@@ -32,7 +32,7 @@
     lowLayerReceivers:0,unsupportedReceivers:0,level:0,pixelBudget:0,adjustments:0};
   let qualityBadSamples=0,qualityGoodSamples=0;
   let playbackTimer = null, playbackDispatcher = null, videoStreamStore = null, lastPlaybackRecovery = -Infinity;
-  const recovery = {attempts:0, lastReason:null,networkDeferrals:0};
+  const recovery = {attempts:0, lastReason:null,networkDeferrals:0,encryptionDeferrals:0};
   let nextReceiverOpen=0;
   let enabled = true, automatic = false, constructions = 0, lastError = null;
   let videoGuard = 'waiting', guardAttempts = 0;
@@ -421,9 +421,10 @@
   function playbackRecord(root) {
     let record = playback.get(root);
     if (!record) {
-      record = {connection:null, previous:null, stalledSince:null, attempts:[], nextRetry:0, pending:null,
+      record = {connection:null, control:null, previous:null, stalledSince:null, attempts:[], nextRetry:0, pending:null,
         networkCongestedUntil:0,networkDeferralSince:null,
-        timeoutPending:false, timeoutConnection:null, timeoutVersion:0, nativeTimeoutSeen:false, sample:null,sampleAt:null};
+        encryptionConnection:null,encryptionPending:false,encryptionPendingSince:null,encryptionReadyUntil:0,encryptionDeferred:false,
+        timeoutPending:false, timeoutConnection:null, timeoutVideoId:null, timeoutVersion:0, nativeTimeoutSeen:false, sample:null,sampleAt:null};
       playback.set(root,record);
     }
     return record;
@@ -444,9 +445,57 @@
     }
     return true; // Older clients expose only the per-SSRC sinkWant counters.
   }
+  function playbackControlOpen(root) {
+    const socket=root._socket?.webSocket;
+    return !!socket && (socket.readyState === undefined || socket.readyState === 1);
+  }
+  function currentVideo(root, videoId) {
+    const current=root._goLiveQualityManager?.streamId;
+    // First-frame callbacks from a removed tile can arrive after Discord has
+    // assigned its successor. Older clients/events may not expose either ID.
+    return videoId==null || current==null || String(videoId)===String(current);
+  }
+  function playbackEncryptionGrace(root, record, now) {
+    // RTC_CONNECTED precedes DAVE group creation. A first-frame timeout while
+    // MLS is still joining must not tear down that join and start it over.
+    // Only observe readiness; never retain or report the epoch authenticator.
+    if (record.encryptionConnection !== root._connection) {
+      record.encryptionConnection=root._connection;record.encryptionPendingSince=null;
+      record.encryptionPending=false;record.encryptionReadyUntil=0;record.encryptionDeferred=false;
+    }
+    let state;try {state=root.getSecureFramesState?.();} catch {}
+    const pending=typeof state?.version==='number' && state.version>0 && state.epochAuthenticator==='';
+    const ready=typeof state?.version==='number' && state.version>0
+      && typeof state.epochAuthenticator==='string' && state.epochAuthenticator.length>0;
+    if (pending) {
+      if (record.encryptionPendingSince===null) {
+        record.encryptionPendingSince=now;record.encryptionDeferred=false;
+        record.previous=null;record.stalledSince=null;
+      }
+      record.encryptionPending=true;record.encryptionReadyUntil=0;
+      // An abandoned MLS join still needs bounded recovery and retry limits.
+      return now-record.encryptionPendingSince>=0 && now-record.encryptionPendingSince<60000;
+    }
+    if (record.encryptionPending && ready) {
+      record.encryptionReadyUntil=now+5000;
+      record.stalledSince=null;
+    } else if (!ready) record.encryptionReadyUntil=0;
+    record.encryptionPending=false;record.encryptionPendingSince=null;
+    return now<record.encryptionReadyUntil;
+  }
   function recoverPlayback(root, reason) {
-    if (!currentReceiver(root) || typeof root.reconnect !== 'function') return;
+    // Discord owns control Resume/backoff and RTC negotiation. Restarting the
+    // whole receiver here would interrupt that recovery and discard its media.
+    if (!currentReceiver(root) || root.state !== 'RTC_CONNECTED' || !playbackControlOpen(root)
+      || typeof root.reconnect !== 'function') return;
     const record = playbackRecord(root), now = Date.now();
+    if (record.timeoutPending && !currentVideo(root,record.timeoutVideoId)) {
+      clearPlaybackTimeout(record);return;
+    }
+    if (playbackEncryptionGrace(root,record,now)) {
+      if (!record.encryptionDeferred) {record.encryptionDeferred=true;recovery.encryptionDeferrals++;}
+      return;
+    }
     if (reason==='video-decode-stalled' && record.networkCongestedUntil>now) {
       // Missing video under active packet loss is not proof that the decoder
       // failed. Give the quality controller time before requesting another
@@ -470,20 +519,22 @@
     for (const [streamKey,root] of Object.entries(store.getRTCConnections())) {
       if (event.streamKey != null ? event.streamKey === streamKey
         : event.userId != null && event.userId === root._goLiveQualityManager?.userId) {
+        if (!currentVideo(root,event.videoStreamId)) continue;
         const record=playbackRecord(root), version=++record.timeoutVersion;
-        const connection=root._connection, socket=root._socket;
+        const connection=root._connection, socket=root._socket, control=socket?.webSocket;
         // Flux can still be dispatching; reconnect on the next event-loop turn.
         setTimeout(() => {
           if (playback.get(root)!==record || record.timeoutVersion!==version
-            || root._connection!==connection || root._socket!==socket || !currentReceiver(root)) return;
-          record.timeoutPending=true;record.timeoutConnection=connection;record.nativeTimeoutSeen=true;
+            || root._connection!==connection || root._socket!==socket || root._socket?.webSocket!==control
+            || !currentVideo(root,event.videoStreamId) || !currentReceiver(root)) return;
+          record.timeoutPending=true;record.timeoutConnection=connection;record.timeoutVideoId=event.videoStreamId??null;record.nativeTimeoutSeen=true;
           recoverPlayback(root,'first-frame-timeout');
         },0);
       }
     }
   }
   function clearPlaybackTimeout(record) {
-    record.timeoutPending=false;record.timeoutConnection=null;record.timeoutVersion++;
+    record.timeoutPending=false;record.timeoutConnection=null;record.timeoutVideoId=null;record.timeoutVersion++;
   }
   function onVideoReady(event) {
     if (event?.mediaContext !== 'stream') return;
@@ -491,7 +542,7 @@
       if (event.streamKey != null ? event.streamKey === streamKey
         : event.userId != null && event.userId === root._goLiveQualityManager?.userId) {
         const record=playback.get(root);
-        if (record) clearPlaybackTimeout(record);
+        if (record && currentVideo(root,event.videoStreamId)) clearPlaybackTimeout(record);
       }
     }
   }
@@ -507,7 +558,7 @@
       for (const [streamKey,root] of Object.entries(connections)) {
         if (!roots.includes(root) || root.isStreamSender()) continue;
         const record=playbackRecord(root);
-        const timeout=events.find(event => event?.mediaContext==='stream'
+        const timeout=events.find(event => event?.mediaContext==='stream' && currentVideo(root,event.videoStreamId)
           && (event.streamKey!=null ? event.streamKey===streamKey
             : event.userId!=null && event.userId===root._goLiveQualityManager?.userId));
         if (!timeout) {record.nativeTimeoutSeen=false;continue;}
@@ -516,7 +567,7 @@
         // Keep a stale native error latched after decoded progress confirms
         // success; only a new event or disappearance/reappearance rearms it.
         if (!record.timeoutPending) {
-          record.timeoutPending=true;record.timeoutConnection=root._connection;
+          record.timeoutPending=true;record.timeoutConnection=root._connection;record.timeoutVideoId=timeout.videoStreamId??null;
         }
       }
     } catch {} // Native store availability varies across Discord versions.
@@ -546,22 +597,25 @@
     for (const root of playback.keys()) if (!roots.includes(root)) playback.delete(root);
     detectVideoTimeouts(roots);
     await Promise.all(roots.map(async root => {
-      const record=playbackRecord(root), connection=root._connection;
-      if (record.connection !== connection || root.state !== 'RTC_CONNECTED') {
-        record.connection=connection;record.previous=null;record.stalledSince=null;record.sample=null;record.pending=null;
+      const record=playbackRecord(root), connection=root._connection, control=root._socket?.webSocket;
+      if (record.timeoutPending && !currentVideo(root,record.timeoutVideoId)) clearPlaybackTimeout(record);
+      if (record.connection !== connection || record.control !== control || root.state !== 'RTC_CONNECTED' || !playbackControlOpen(root)) {
+        record.connection=connection;record.control=control;record.previous=null;record.stalledSince=null;record.sample=null;record.pending=null;
         record.sampleAt=null;
         record.networkCongestedUntil=0;record.networkDeferralSince=null;
       }
+      playbackEncryptionGrace(root,record,Date.now());
       // A native timeout is evidence even if stats are missing or never settle.
       // Do not let a request from a destroyed connection block its successor.
-      if (record.pending || !connection || root.state !== 'RTC_CONNECTED' || typeof connection.getStats !== 'function') {
+      if (record.pending || !connection || root.state !== 'RTC_CONNECTED' || !playbackControlOpen(root) || typeof connection.getStats !== 'function') {
         if (record.timeoutPending && root.state === 'RTC_CONNECTED') recoverPlayback(root,'first-frame-timeout');
         return;
       }
       const pending={};record.pending=pending;
       try {
         const stats=await connection.getStats();
-        if (!enabled || !automatic || root.state !== 'RTC_CONNECTED' || root._connection !== connection || !roots.includes(root)
+        if (!enabled || !automatic || root.state !== 'RTC_CONNECTED' || root._connection !== connection
+          || root._socket?.webSocket !== control || !playbackControlOpen(root) || !roots.includes(root)
           || playback.get(root)!==record || record.pending!==pending || !Object.values(store.getRTCConnections()).includes(root)) return;
         const sender=root.isStreamSender();
         const entries=sender ? stats?.rtp?.outbound : Object.values(stats?.rtp?.inbound || {}).flat();
@@ -582,8 +636,15 @@
           packets:sum(sender?'packetsSent':'packetsReceived',videos),packetsLost:sum('packetsLost',videos),
           decodeErrors:sum('framesDecodeErrors',videos),decryptFailures:sum(sender?'encryptFailureCount':'decryptFailureCount',videos)};
         record.sampleAt=Date.now();
-        const previous=record.previous, now=Date.now();record.previous={...sample,at:now};
+        let previous=record.previous;
+        const now=Date.now();record.previous={...sample,at:now};
         const elapsed=previous?now-previous.at:0;
+        // Background throttling, sleep and a slow getStats() leave gaps in
+        // observation. Those gaps cannot count as continuous decoder failure.
+        if (previous && (elapsed<=0 || elapsed>15000)) {
+          previous=null;record.stalledSince=null;
+          record.networkCongestedUntil=0;record.networkDeferralSince=null;
+        }
         if (previous?.requested && sample.requested && elapsed>0 && elapsed<=15000) {
           if (numeric(sample.bytes) && numeric(previous.bytes) && sample.bytes>=previous.bytes)
             record.sample.bitrateBps=Math.round((sample.bytes-previous.bytes)*8000/elapsed);
@@ -614,7 +675,7 @@
         if (record.pending===pending) {
           record.pending=null;
           if (playback.get(root)===record && record.timeoutPending && root._connection===connection
-            && root.state==='RTC_CONNECTED') recoverPlayback(root,'first-frame-timeout');
+            && root._socket?.webSocket===control && root.state==='RTC_CONNECTED') recoverPlayback(root,'first-frame-timeout');
         }
       }
     }));
@@ -628,7 +689,7 @@
         for (const name of ['bitrateBps','decodeFps','lossPercent']) delete sample[name];
       }
       return {state:['RTC_CONNECTED','RTC_CONNECTING','RTC_DISCONNECTED','NO_ROUTE','AWAITING_ENDPOINT'].includes(root.state)?root.state:'OTHER',
-        ...sample,timeoutPending:record.timeoutPending,recoveryAttempts:record.attempts.length};
+        ...sample,timeoutPending:record.timeoutPending,encryptionPending:record.encryptionPending,recoveryAttempts:record.attempts.length};
     })};
   }
   function status() {

@@ -9,14 +9,14 @@ import time
 NUMBERS={'updatedAt','warmupMs','lastWarmupAgeSeconds','coreGeneration','activeControls','mediaBridges',
     'openedControls','controlUpBytes','controlDownBytes','udpUpBytes','udpDownBytes','udpUpPackets','udpDownPackets',
     'udpQueueDrops','udpReceiveQueueDrops','udpMalformedPackets','udpDiscoveryRetries','udpDiscoveryRenewals','controlRetries',
-    'mediaStartupTimeouts','mediaResets','coreRestarts','lastUdpDownAt','lastTunnelCheckAt',
+    'mediaStartupTimeouts','mediaResets','mediaReleases','coreRestarts','lastUdpDownAt','lastTunnelCheckAt',
     'udpPathChecks','udpPathProbes','mediaPathTimeouts','mediaPathChanges','udpSocketErrors','udpSendBackpressure','udpSendTimeouts',
     'activeGatewayControls','openedGatewayControls','gatewayConnectMs','gatewayUpBytes','gatewayDownBytes','gatewayRetries',
     'localMediaSendBackpressure','localMediaSendTimeouts'}
 FLAGS={'configurationReady','coreRunning','stopping','keepWarm','tunnelReachable','tunnelGateway'}
 STREAM_FLAGS={'active','controlConnected','mediaAllocated','localPeerSeen','udpSent','udpReceived'}
 EVENTS={'warmup-ok','warmup-failed','tunnel-probe-failed','tunnel-probe-ok','core-restart','core-restart-failed',
-    'media-reset','control-open','control-close','control-error','control-retry','media-startup-timeout',
+    'media-reset','media-release','control-open','control-close','control-error','control-retry','media-startup-timeout',
     'media-transport-closed','media-resume-missing','media-path-timeout','media-path-changed','recovery-error','status-write-error','gateway-open','gateway-close','gateway-error','gateway-retry'}
 
 
@@ -106,7 +106,7 @@ def playback_snapshot(base):
     except (OSError,ValueError):return {'available':False}
     updated=value.get('updatedAt')
     result={'available':True,'stale':not number(updated) or not 0<=time.time()-updated<=20}
-    for name in ('updatedAt','attempts','networkDeferrals'):
+    for name in ('updatedAt','attempts','networkDeferrals','encryptionDeferrals'):
         if number(value.get(name)):result[name]=value[name]
     if value.get('lastReason') in ('first-frame-timeout','video-decode-stalled'):result['lastReason']=value['lastReason']
     quality=value.get('multiScreen')
@@ -120,7 +120,7 @@ def playback_snapshot(base):
     for stream in streams[:8] if isinstance(streams,list) else []:
         if not isinstance(stream,dict):continue
         clean={}
-        for name in ('sender','requested','timeoutPending'):
+        for name in ('sender','requested','timeoutPending','encryptionPending'):
             if type(stream.get(name)) is bool:clean[name]=stream[name]
         for name in ('frames','packets','packetsLost','decodeErrors','decryptFailures','recoveryAttempts','bitrateBps','decodeFps','lossPercent'):
             if number(stream.get(name)):clean[name]=stream[name]

@@ -30,6 +30,159 @@ function fixture({nativeTimeoutStore=false}={}){
 }
 (async()=>{
   {
+    const f=fixture(),{root}=f.add('replaced-tile');root._goLiveQualityManager.streamId='current-video';
+    f.timeout({mediaContext:'stream',streamKey:'replaced-tile',videoStreamId:'retired-video'});
+    assert.equal(root.reconnects,0,'a retired video tile must not reconnect its healthy successor');
+    assert(f.ctx.__discordProtonStreams.status().playback.streams.every(stream=>!stream.timeoutPending));
+    f.timeout({mediaContext:'stream',streamKey:'replaced-tile',videoStreamId:'current-video'});
+    assert.equal(root.reconnects,1,'a timeout for the current video retains recovery');f.remove();
+  }
+  {
+    const f=fixture(),{root}=f.add('current-timeout-before-stale');
+    root._goLiveQualityManager.streamId='current-video';
+    f.signal({type:'VIDEO_STREAM_READY_TIMEOUT',mediaContext:'stream',streamKey:'current-timeout-before-stale',videoStreamId:'current-video'});
+    f.signal({type:'VIDEO_STREAM_READY_TIMEOUT',mediaContext:'stream',streamKey:'current-timeout-before-stale',videoStreamId:'retired-video'});
+    f.flush();
+    assert.equal(root.reconnects,1,'a stale event must not cancel recovery already queued for the current video');f.remove();
+  }
+  {
+    const f=fixture({nativeTimeoutStore:true}),{root}=f.add('stored-retired-tile');
+    root._goLiveQualityManager.streamId='current-video';
+    f.nativeTimeouts.receiver={mediaContext:'stream',streamKey:'stored-retired-tile',videoStreamId:'retired-video'};
+    await f.tick();assert.equal(root.reconnects,0,'a stored timeout from a retired tile must also be ignored');
+    f.nativeTimeouts.receiver.videoStreamId='current-video';await f.tick();assert.equal(root.reconnects,1);f.remove();
+  }
+  {
+    const f=fixture(),{root}=f.add('tile-changed-during-grace');
+    root._goLiveQualityManager.streamId='retired-video';
+    const secure={version:1,epochAuthenticator:''};root.getSecureFramesState=()=>secure;
+    f.timeout({mediaContext:'stream',streamKey:'tile-changed-during-grace',videoStreamId:'retired-video'});
+    root._goLiveQualityManager.streamId='current-video';secure.epochAuthenticator='synthetic';await f.tick(60000);
+    assert.equal(root.reconnects,0,'a delayed timeout must be retired when Discord assigns a new video ID');
+    assert.equal(f.ctx.__discordProtonStreams.status().playback.streams[0].timeoutPending,false);f.remove();
+  }
+  {
+    const f=fixture(),{root,row}=f.add('dave-joining');
+    const secure={version:1,epochAuthenticator:''};root.getSecureFramesState=()=>secure;
+    f.timeout({mediaContext:'stream',streamKey:'dave-joining'});
+    await f.tick(45000);
+    assert.equal(root.reconnects,0,'a first-frame timeout must not destroy a pending MLS join');
+    let status=f.ctx.__discordProtonStreams.status().playback;
+    assert.equal(status.encryptionDeferrals,1);assert.equal(status.streams[0].encryptionPending,true);
+    assert.equal(status.attempts,0,'waiting for DAVE must preserve the recovery budget');
+    secure.epochAuthenticator='PRIVATE-EPOCH';await f.tick();
+    assert.equal(root.reconnects,0,'a completed MLS join gets a first-keyframe grace period');
+    row.framesDecoded=1;row.packetsReceived=50;await f.tick();
+    status=f.ctx.__discordProtonStreams.status().playback;
+    assert.equal(status.streams[0].timeoutPending,false);assert.equal(status.streams[0].encryptionPending,false);
+    assert.equal(root.reconnects,0,'decoded progress after the join resolves the timeout without reconnecting');
+    assert(!JSON.stringify(f.reports).includes('PRIVATE-EPOCH'),'encryption diagnostics must not export authenticators');
+    f.remove();
+  }
+  {
+    const f=fixture(),{root,row}=f.add('dave-first-frame-at-ready');
+    const secure={version:1,epochAuthenticator:''};root.getSecureFramesState=()=>secure;
+    f.timeout({mediaContext:'stream',streamKey:'dave-first-frame-at-ready'});await f.tick(25000);
+    secure.epochAuthenticator='synthetic';row.framesDecoded=1;row.packetsReceived=50;await f.tick();
+    await f.tick(30000);
+    assert.equal(root.reconnects,0,'the first decoded frame in the readiness sample must resolve the timeout even if video then pauses');
+    assert.equal(f.ctx.__discordProtonStreams.status().playback.streams[0].timeoutPending,false);f.remove();
+  }
+  {
+    const f=fixture(),{root}=f.add('dave-stuck');root.getSecureFramesState=()=>({version:1,epochAuthenticator:''});
+    f.timeout({mediaContext:'stream',streamKey:'dave-stuck'});
+    await f.tick(59999);assert.equal(root.reconnects,0);
+    await f.tick(1);assert.equal(root.reconnects,1,'an abandoned MLS join must recover at the bounded deadline');
+    await f.tick(30000);assert.equal(root.reconnects,2);
+    await f.tick(30000);assert.equal(root.reconnects,2,'DAVE waiting must preserve the existing retry cap');f.remove();
+  }
+  {
+    const f=fixture(),{root}=f.add('dave-ready-no-video');
+    const secure={version:1,epochAuthenticator:''};root.getSecureFramesState=()=>secure;
+    f.timeout({mediaContext:'stream',streamKey:'dave-ready-no-video'});await f.tick(25000);
+    secure.epochAuthenticator='synthetic';await f.tick();await f.tick(4999);
+    assert.equal(root.reconnects,0);await f.tick(1);
+    assert.equal(root.reconnects,1,'a completed MLS join without decoded video must still recover after the grace');f.remove();
+  }
+  {
+    const f=fixture(),{root,row}=f.add('dave-rekey');
+    const secure={version:1,epochAuthenticator:'synthetic'};root.getSecureFramesState=()=>secure;
+    row.framesDecoded=100;await f.tick();secure.epochAuthenticator='';
+    f.timeout({mediaContext:'stream',streamKey:'dave-rekey'});await f.tick(30000);
+    assert.equal(root.reconnects,0,'group recreation during an established stream must also be allowed to finish');
+    secure.epochAuthenticator='new-synthetic';await f.tick();row.framesDecoded++;await f.tick();
+    assert.equal(root.reconnects,0);assert.equal(f.ctx.__discordProtonStreams.status().playback.streams[0].timeoutPending,false);
+    secure.epochAuthenticator='';f.timeout({mediaContext:'stream',streamKey:'dave-rekey'});await f.tick(60000);
+    assert.equal(root.reconnects,1,'a later failed rekey receives its own bounded grace');f.remove();
+  }
+  for(const getter of [()=>({version:0,epochAuthenticator:''}),()=>null,()=>{throw Error('Unsupported');}]) {
+    const f=fixture(),{root}=f.add('dave-unavailable');root.getSecureFramesState=getter;
+    f.timeout({mediaContext:'stream',streamKey:'dave-unavailable'});
+    assert.equal(root.reconnects,1,'disabled or unavailable DAVE must retain existing timeout recovery');f.remove();
+  }
+  {
+    const f=fixture(),{root,row}=f.add('sampling-gap');await f.tick();
+    for(let i=0;i<3;i++){row.packetsReceived+=50;await f.tick();}
+    row.packetsReceived+=50;await f.tick(60000);
+    assert.equal(root.reconnects,0,'a suspended renderer is not evidence of continuous decoder failure');
+    for(let i=0;i<3;i++){row.packetsReceived+=50;await f.tick();}
+    assert.equal(root.reconnects,0,'decoder observation must start again after a sampling gap');
+    for(let i=0;i<3;i++){row.packetsReceived+=50;await f.tick();}
+    assert.equal(root.reconnects,1,'a real stall after the gap must still recover');f.remove();
+  }
+  {
+    const f=fixture(),{root,row}=f.add('control-resuming');await f.tick();
+    root._socket.webSocket.readyState=3;
+    for(let i=0;i<8;i++){row.packetsReceived+=50;await f.tick();}
+    assert.equal(root.reconnects,0,'decoder recovery must not interrupt native control Resume/backoff');
+    root._socket.webSocket={url:'ws://127.0.0.1:19884/relay?synthetic',readyState:1};
+    row.packetsReceived+=50;await f.tick();
+    assert.equal(root.reconnects,0,'a resumed control starts a new decoder observation window');
+    for(let i=0;i<6;i++){row.packetsReceived+=50;await f.tick();}
+    assert.equal(root.reconnects,1,'an open resumed control still permits recovery from a real decoder stall');f.remove();
+  }
+  {
+    const f=fixture(),{root}=f.add('native-connecting');root.state='RTC_CONNECTING';
+    f.timeout({mediaContext:'stream',streamKey:'native-connecting'});
+    assert.equal(root.reconnects,0,'a native first-frame timeout must not restart an in-progress RTC connection');
+    assert.equal(f.ctx.__discordProtonStreams.status().playback.attempts,0,'waiting for native recovery must not consume the retry budget');
+    root.state='RTC_CONNECTED';await f.tick();
+    assert.equal(root.reconnects,1,'an unresolved native timeout is recovered once the RTC connection is ready');f.remove();
+  }
+  {
+    const f=fixture(),{root,row}=f.add('replacement-websocket');await f.tick();
+    for(let i=0;i<4;i++){row.packetsReceived+=50;await f.tick();}
+    root._socket.webSocket={url:'ws://127.0.0.1:19884/relay?synthetic',readyState:1};
+    row.packetsReceived+=50;await f.tick();
+    assert.equal(root.reconnects,0,'stats from before a control replacement must not trigger a reconnect of its successor');f.remove();
+  }
+  {
+    const f=fixture(),{root}=f.add('timeout-during-resume');root._socket.webSocket.readyState=3;
+    f.timeout({mediaContext:'stream',streamKey:'timeout-during-resume'});await f.tick(30000);
+    assert.equal(root.reconnects,0,'a native timeout must wait while control Resume/backoff is in progress');
+    assert.equal(f.ctx.__discordProtonStreams.status().playback.attempts,0);
+    root._socket.webSocket={url:'ws://127.0.0.1:19884/relay?synthetic',readyState:1};await f.tick();
+    assert.equal(root.reconnects,1,'waiting for control must preserve an unresolved native timeout');f.remove();
+  }
+  {
+    const f=fixture(),{root,row}=f.add('old-control-stats');await f.tick();
+    for(let i=0;i<4;i++){row.packetsReceived+=50;await f.tick();}
+    let release;root._connection.getStats=()=>new Promise(resolve=>{release=resolve;});const pending=f.tick();
+    root._socket.webSocket={url:'ws://127.0.0.1:19884/relay?synthetic',readyState:1};
+    release({rtp:{inbound:{privateUser:[{...row,packetsReceived:row.packetsReceived+50}]}}});await pending;
+    assert.equal(root.reconnects,0,'late stats from a replaced control cannot interrupt the replacement');f.remove();
+  }
+  {
+    const f=fixture(),{root}=f.add('old-control-timeout');let release;
+    root._connection.getStats=()=>new Promise(resolve=>{release=resolve;});const pending=f.tick();
+    root._socket.webSocket.readyState=3;f.timeout({mediaContext:'stream',streamKey:'old-control-timeout'});
+    root._socket.webSocket={url:'ws://127.0.0.1:19884/relay?synthetic',readyState:1};
+    release({});await pending;
+    assert.equal(root.reconnects,0,'old stats completion cannot apply a timeout to a replacement control');
+    root._connection.getStats=async()=>({});await f.tick();
+    assert.equal(root.reconnects,1,'the monitor still recovers an unresolved timeout on the current control');f.remove();
+  }
+  {
     const f=fixture(),{root,row}=f.add('network-loss');await f.tick();
     for(let i=0;i<7;i++){row.packetsReceived+=100;row.packetsLost+=50;await f.tick();}
     assert.equal(root.reconnects,0,'packet-loss starvation must get a bounded grace before decoder recovery');

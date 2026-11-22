@@ -19,10 +19,10 @@ async function main(){try{
  // Simulate a disk stalled by scanning/flush without blocking the renderer.
  // Reports arriving meanwhile must not race over the same temporary file.
  Object.defineProperty(nativeFs,'promises',{configurable:true,value:{...fs.promises,async writeFile(...args){writes++;await writeGate;return originalWrite(...args);}}});
- const reporting=bridge.reportPlayback({attempts:1,networkDeferrals:1,lastReason:'video-decode-stalled',token:'DO-NOT-SHARE',
+ const reporting=bridge.reportPlayback({attempts:1,networkDeferrals:1,encryptionDeferrals:2,lastReason:'video-decode-stalled',token:'DO-NOT-SHARE',
   multiScreen:{enabled:true,activeReceivers:3,limitedReceivers:3,level:1,pixelBudget:599040,adjustments:2,nonce:'DO-NOT-SHARE',unsupportedReceivers:NaN,
    measuredBitrateBps:800000,measuredReceivers:1,lowerLayerAvailableReceivers:0,layerInfoPendingReceivers:2},
-  streams:[{sender:false,requested:true,timeoutPending:true,frames:42,packets:100,decodeErrors:NaN,state:'RTC_CONNECTED',userId:'DO-NOT-SHARE',
+  streams:[{sender:false,requested:true,timeoutPending:true,encryptionPending:true,epochAuthenticator:'DO-NOT-SHARE',frames:42,packets:100,decodeErrors:NaN,state:'RTC_CONNECTED',userId:'DO-NOT-SHARE',
    bitrateBps:800000,decodeFps:20,lossPercent:5}]});
  try{
   assert.equal(writes,1);assert.equal(fs.existsSync(path.join(temp,'data','playback-status.json')),false);
@@ -35,6 +35,8 @@ async function main(){try{
  assert.equal(JSON.parse(playback).multiScreen.level,1);
  assert.equal(JSON.parse(playback).multiScreen.unsupportedReceivers,undefined);
  assert.equal(JSON.parse(playback).networkDeferrals,1);
+ assert.equal(JSON.parse(playback).encryptionDeferrals,2);
+ assert.equal(JSON.parse(playback).streams[0].encryptionPending,true);
  assert.equal(JSON.parse(playback).multiScreen.measuredBitrateBps,800000);
  assert.equal(JSON.parse(playback).multiScreen.layerInfoPendingReceivers,2);
  assert.equal(JSON.parse(playback).streams[0].decodeFps,20);

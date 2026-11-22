@@ -123,13 +123,39 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                         self.assertFalse(opening.done(),'replacement must wait instead of receiving HTTP 409')
                         release_cleanup.set()
                         replacement=await asyncio.wait_for(opening,2)
-                        try:self.assertEqual(await asyncio.wait_for(replacement.recv(),2),'ready')
+                        try:
+                            self.assertEqual(await asyncio.wait_for(replacement.recv(),2),'ready')
+                            self.assertIs(relay.sessions['a'*32],session)
+                            self.assertIs(session.media,media);self.assertFalse(media.closed)
                         finally:await replacement.close()
-                        self.assertIs(relay.sessions['a'*32],session)
-                        self.assertIs(session.media,media);self.assertFalse(media.closed)
                     finally:
                         release_cleanup.set();opening.cancel();await asyncio.gather(opening,return_exceptions=True)
             finally:release_cleanup.set();await relay.close()
+
+    async def test_final_stream_close_releases_media_before_accepting_a_successor(self):
+        async def remote_handler(peer):
+            await peer.send('ready');await peer.wait_closed()
+        async with serve(remote_handler,'127.0.0.1',0) as remote:
+            remote_url='ws://127.0.0.1:'+str(remote.sockets[0].getsockname()[1])
+            @asynccontextmanager
+            async def connector(target,**options):
+                async with connect(remote_url,proxy=None) as upstream:yield upstream
+            relay=Relay({'nonce':'synthetic','socksPort':19885,'idleSeconds':40},core=FakeCore(),connector=connector)
+            try:
+                async with serve(relay.handle,'127.0.0.1',0) as local:
+                    url='ws://127.0.0.1:'+str(local.sockets[0].getsockname()[1])+'/relay?'+urlencode({
+                        'nonce':'synthetic','target':'wss://test.discord.media/?v=9','sid':'a'*32})
+                    for code in (1000,1001,4006,4009,4014):
+                        with self.subTest(code=code):
+                            async with connect(url,proxy=None) as client:
+                                self.assertEqual(await asyncio.wait_for(client.recv(),2),'ready')
+                                session=relay.sessions['a'*32];media=FakeMedia();session.media=media
+                                await client.close(code)
+                            await asyncio.wait_for(session.inactive.wait(),2)
+                            self.assertTrue(media.closed,'a retired screen must stop forwarding to a native UDP port that can be reused')
+                            self.assertIsNone(session.media,'final close must not reserve an old UDP bridge for forty seconds')
+                            self.assertEqual(relay.health()['mediaBridges'],0)
+            finally:await relay.close()
 
     async def test_client_reconnect_close_code_reaches_media_server(self):
         codes=[];closed=asyncio.Event()
@@ -159,6 +185,32 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                         for _ in range(100):
                             if not relay.stats['activeControls']:break
                             await asyncio.sleep(.001)
+            finally:await relay.close()
+
+    async def test_server_final_close_also_releases_media(self):
+        async def remote_handler(peer):
+            await peer.send('ready')
+            try:await peer.close(int(await peer.recv()))
+            except ConnectionClosed:pass
+        async with serve(remote_handler,'127.0.0.1',0) as remote:
+            remote_url='ws://127.0.0.1:'+str(remote.sockets[0].getsockname()[1])
+            @asynccontextmanager
+            async def connector(target,**options):
+                async with connect(remote_url,proxy=None) as upstream:yield upstream
+            relay=Relay({'nonce':'synthetic','socksPort':19885,'idleSeconds':40},core=FakeCore(),connector=connector)
+            try:
+                async with serve(relay.handle,'127.0.0.1',0) as local:
+                    url='ws://127.0.0.1:'+str(local.sockets[0].getsockname()[1])+'/relay?'+urlencode({
+                        'nonce':'synthetic','target':'wss://test.discord.media/?v=9','sid':'a'*32})
+                    for code in (1000,4014):
+                        async with connect(url,proxy=None) as client:
+                            self.assertEqual(await asyncio.wait_for(client.recv(),2),'ready')
+                            session=relay.sessions['a'*32];media=FakeMedia();session.media=media
+                            await client.send(str(code))
+                            with self.assertRaises(ConnectionClosed):await asyncio.wait_for(client.recv(),2)
+                        await asyncio.wait_for(session.inactive.wait(),2)
+                        self.assertTrue(media.closed)
+                        self.assertIsNone(session.media)
             finally:await relay.close()
 
     async def test_outbound_burst_yields_to_other_streams(self):
@@ -479,6 +531,7 @@ class TransportTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(await client.recv(),binary)
                     await client.send('synthetic-control');await client.send(binary)
                     await asyncio.sleep(.02)
+                    await client.close(4000) # Native reconnect requests Resume; normal close retires the stream.
                 await asyncio.sleep(.03)
                 self.assertFalse(media[0].closed)
                 async with connect(url(),origin='https://discord.com',proxy=None) as client:
